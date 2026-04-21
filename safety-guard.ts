@@ -135,6 +135,8 @@ export const BLACKLIST: RegExp[] = [
 	new RegExp(`^${escapeRegExp(HOME_DIR)}/\\.pi/agent/auth\\.json`),                  // Models credentials
 	new RegExp(`^${escapeRegExp(HOME_DIR)}/\\.ssh/`),                                  // SSH credentials
 	new RegExp(`^${escapeRegExp(HOME_DIR)}/\\.gnupg/`),                                // GPG credentials
+	new RegExp(`^${escapeRegExp(HOME_DIR)}/\\.gitconfig`),
+	new RegExp(`^${escapeRegExp(HOME_DIR)}/\\.env`),
 	new RegExp(`^${escapeRegExp(HOME_DIR)}/Library/Keychains/`),                       // macOS Keychain
 	new RegExp(`^${escapeRegExp(HOME_DIR)}/\\.aws/credentials`),                       // AWS credentials file
 	new RegExp(`^${escapeRegExp(HOME_DIR)}/Pictures/Photos Library\\.photoslibrary/`), // Photos library (confidential)
