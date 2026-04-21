@@ -84,6 +84,7 @@ const dangerousBashPatterns = [
 
 // Blacklisted paths (credentials/confidential data)
 export const BLACKLIST: RegExp[] = [
+	new RegExp(`^${HOME_DIR}/.pi/agent/auth.json`),                      // Models credentials
 	new RegExp(`^${HOME_DIR}/.ssh/`),                                    // SSH credentials
 	new RegExp(`^${HOME_DIR}/.gnupg/`),                                  // GPG credentials
 	new RegExp(`^${HOME_DIR}/Library/Keychains/`),                       // macOS Keychain
