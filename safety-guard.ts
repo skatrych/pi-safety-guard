@@ -135,11 +135,12 @@ export const BLACKLIST: RegExp[] = [
 	new RegExp(`^${escapeRegExp(HOME_DIR)}/\\.pi/agent/auth\\.json`),                  // Models credentials
 	new RegExp(`^${escapeRegExp(HOME_DIR)}/\\.ssh/`),                                  // SSH credentials
 	new RegExp(`^${escapeRegExp(HOME_DIR)}/\\.gnupg/`),                                // GPG credentials
-	new RegExp(`^${escapeRegExp(HOME_DIR)}/\\.gitconfig`),
-	new RegExp(`^${escapeRegExp(HOME_DIR)}/\\.env`),
 	new RegExp(`^${escapeRegExp(HOME_DIR)}/Library/Keychains/`),                       // macOS Keychain
 	new RegExp(`^${escapeRegExp(HOME_DIR)}/\\.aws/credentials`),                       // AWS credentials file
 	new RegExp(`^${escapeRegExp(HOME_DIR)}/Pictures/Photos Library\\.photoslibrary/`), // Photos library (confidential)
+	new RegExp(`^${escapeRegExp(HOME_DIR)}/\\.env$`),                                  // ~/.env (home-level secrets)
+	new RegExp(`^${escapeRegExp(HOME_DIR)}/\\.env\\.`),                                // ~/.env.* (e.g. ~/.env.local)
+	new RegExp(`^${escapeRegExp(HOME_DIR)}/\\.gitconfig$`),                            // ~/.gitconfig (name, email, tokens)
 	new RegExp(`^/etc/`),                                                              // System configs
 	new RegExp(`^/usr/`),                                                              // System directories
 	new RegExp(`^/System/`),                                                           // macOS System
@@ -526,12 +527,53 @@ export default function (pi: ExtensionAPI) {
 	};
 
 	/**
+	* Append security policy to the system prompt.
+	* This is called at session start to communicate security constraints to the AI.
+	*/
+	const appendSecurityPolicy = (systemPrompt: string): string => {
+		const securityPolicy = `
+
+--- SECURITY POLICY ---
+## Security boundaries (enforced by safety-guard extension)
+
+You must NEVER read, write, execute, or reference the contents of these paths.
+Do not write scripts or code that access them either directly or indirectly:
+
+- ~/.ssh/ and any files within it
+- ~/.aws/credentials
+- ~/.kube/ and any files within it  
+- ~/.gnupg/ and any files within it
+- ~/.gitconfig
+- ~/.env and ~/.env.* (in home directory or anywhere in the project)
+- Any .env or .env.* file anywhere in the project tree
+- /etc/, /usr/, /System/
+
+If a task appears to require access to these paths, STOP and ask the user
+to provide only the specific values needed rather than reading the files directly.
+These restrictions are enforced at the tool level and cannot be bypassed.
+
+Same applies to the read, update or print operations for the content of 
+AWS secrets (AWS Secret Manager, KMS keys, Certificate keys) or content of
+k8s secrets behind any flavor of Kubernetes cluster.
+- SECURITY POLICY ---
+`;
+		return systemPrompt + securityPolicy;
+	};
+
+	/**
 	 * Session start handler: Load config with validation and atomic loading.
 	 */
 	pi.on("session_start", (event: SessionStartEvent, ctx: ExtensionContext) => {
 		let effectiveCwd = "";
 		try {
 			effectiveCwd = ctx.cwd || process.cwd();
+			// Append security policy to system prompt
+			if (ctx.systemPrompt) {
+				ctx.systemPrompt = appendSecurityPolicy(ctx.systemPrompt);
+			}
+			if (ctx.aiSystemMessage) {
+				ctx.aiSystemMessage = appendSecurityPolicy(ctx.aiSystemMessage);
+			}
 
 			let config: Record<string, unknown> | null = null;
 
@@ -608,20 +650,50 @@ export default function (pi: ExtensionAPI) {
 				WHITELIST.push(new RegExp(`^${escapeRegExp(p)}`));
 			}
 
+			// Blacklist .env and .env.* files anywhere under the project directory.
+			// These files routinely contain API keys, DB passwords, and tokens and
+			// must be protected regardless of nesting depth. This covers:
+			//
+			//   <cwd>/.env                      — root-level
+			//   <cwd>/.env.local                — root-level variant
+			//   <cwd>/packages/api/.env         — monorepo package
+			//   <cwd>/apps/web/.env.production  — nested variant
+			//   <cwd>/a/b/c/.env.staging        — arbitrary depth
+			//
+			// Pattern breakdown:
+			//   ^<cwd>/          — must be inside the project directory
+			//   (?:.+/)?         — zero or more subdirectory segments (any depth)
+			//   \.env            — the filename starts with .env
+			//   $                — end: matches exactly ".env" (no suffix)
+			//   \.               — or followed by a dot: matches ".env.*"
+			const cwdEscaped = escapeRegExp(effectiveCwd);
+			BLACKLIST.push(
+				new RegExp(`^${cwdEscaped}/(?:.+/)?\\.env$`),   // <cwd>[/subdirs]/.env
+				new RegExp(`^${cwdEscaped}/(?:.+/)?\\.env\\.`), // <cwd>[/subdirs]/.env.*
+			);
+			console.log(`[safety-guard] .env blacklist entries added for project directory (all depths): ${effectiveCwd}, security policy appended to system prompt`);
+
 			configLoaded = true;
 		} catch (error: unknown) {
 			console.error("[safety-guard] Config load failed", error);
 			// Safe defaults on error
+			const fallbackCwd = effectiveCwd || process.cwd();
 			allowedPaths = [
 				expandTilde("~/.pi/"),
 				expandTilde("/opt/homebrew/lib/node_modules/@mariozechner/pi-coding-agent/"),
-				effectiveCwd || process.cwd(),
+				fallbackCwd,
 			];
 			notificationsEnabled = true;
 			WHITELIST.length = 0;
 			for (const p of allowedPaths) {
 				WHITELIST.push(new RegExp(`^${escapeRegExp(p)}`));
 			}
+			// Still protect .env files even when config loading failed
+			const cwdEscaped = escapeRegExp(fallbackCwd);
+			BLACKLIST.push(
+				new RegExp(`^${cwdEscaped}/(?:.+/)?\\.env$`),
+				new RegExp(`^${cwdEscaped}/(?:.+/)?\\.env\\.`),
+			);
 			configLoaded = true; // Prevent blocking after failed load
 		}
 	});
