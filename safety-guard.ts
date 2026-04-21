@@ -19,6 +19,16 @@ import { homedir } from "node:os";
 // Cached home directory for consistent path expansion (no hardcoded paths)
 const HOME_DIR = homedir();
 
+/**
+ * Escape a string for use as a RegExp literal.
+ * Prevents special characters in file paths (e.g. dots, parens, username with +)
+ * from being misinterpreted as regex metacharacters in BLACKLIST/WHITELIST entries.
+ * Must be defined before BLACKLIST/WHITELIST so both can use it at module load time.
+ */
+function escapeRegExp(s: string): string {
+	return s.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+}
+
 // ===== PRIORITY 1: DevOps Infrastructure Patterns =====
 const dangerousBashPatterns = [
 	// rm command variations - deletion flags in ANY order
@@ -76,11 +86,20 @@ const dangerousBashPatterns = [
 ];
 
 /**
- * Commands that can read file/directory contents via bash.
- * Used to detect when a bash command is attempting to access a blacklisted path.
- * This list is intentionally broad: if a command can exfiltrate content, it's here.
+ * Token skip list for bash command parsing.
+ *
+ * When tokenising a bash command to extract path arguments, these strings are
+ * recognised as command/program names and skipped — they are not path candidates.
+ * This is NOT a list of "commands that are checked"; ALL commands have their path
+ * arguments checked. This list only prevents the command name itself from being
+ * misclassified as a path argument.
+ *
+ * Note: "." (the POSIX source alias) is intentionally excluded. A bare "." token
+ * that is an absolute/tilde/relative path is already handled by the path-shape
+ * classifier below. Listing it here would cause the current-directory token "."
+ * to be silently skipped rather than evaluated.
  */
-const READ_LIKE_COMMANDS = [
+const COMMAND_NAME_TOKENS = new Set([
 	"cat", "bat", "less", "more", "head", "tail", "tac",  // file content
 	"ls", "ll", "la", "dir", "exa", "eza", "lsd",         // directory listing
 	"find", "locate", "fd",                                // file discovery
@@ -97,12 +116,12 @@ const READ_LIKE_COMMANDS = [
 	"jq", "yq", "xmllint",                                 // data query tools
 	"sqlite3", "psql", "mysql",                            // DB CLI (may read credential files)
 	"env", "printenv", "export",                           // environment (may reveal secrets in env)
-	"source", ".",                                         // source a file (executes it!)
+	"source",                                              // source a file (executes it!)
 	"sh", "bash", "zsh", "fish",                           // shells with file args
-	"base64", "xxd",                                       // encoding that reads stdin/file
+	"base64",                                              // encoding that reads stdin/file
 	"curl", "wget",                                        // can POST file contents
 	"pbcopy", "xclip", "xsel",                             // clipboard (exfiltrates content)
-];
+]);
 
 // ===== PATH SECURITY MODEL: WHITELIST / BLACKLIST =====
 // BLACKLIST has HIGHEST priority - evaluated FIRST
@@ -110,16 +129,18 @@ const READ_LIKE_COMMANDS = [
 // Everything else → require consent (conservative default)
 
 // Blacklisted paths (credentials/confidential data)
+// escapeRegExp() is applied to HOME_DIR so usernames containing regex
+// metacharacters (e.g. dots, plus signs) cannot bypass path matching.
 export const BLACKLIST: RegExp[] = [
-	new RegExp(`^${HOME_DIR}/\\.pi/agent/auth\\.json`),                  // Models credentials
-	new RegExp(`^${HOME_DIR}/\\.ssh/`),                                  // SSH credentials
-	new RegExp(`^${HOME_DIR}/\\.gnupg/`),                                // GPG credentials
-	new RegExp(`^${HOME_DIR}/Library/Keychains/`),                       // macOS Keychain
-	new RegExp(`^${HOME_DIR}/\\.aws/credentials`),                       // AWS credentials file
-	new RegExp(`^${HOME_DIR}/Pictures/Photos Library\\.photoslibrary/`), // Photos library (confidential)
-	new RegExp(`^/etc/`),                                                // System configs
-	new RegExp(`^/usr/`),                                                // System directories
-	new RegExp(`^/System/`),                                             // macOS System
+	new RegExp(`^${escapeRegExp(HOME_DIR)}/\\.pi/agent/auth\\.json`),                  // Models credentials
+	new RegExp(`^${escapeRegExp(HOME_DIR)}/\\.ssh/`),                                  // SSH credentials
+	new RegExp(`^${escapeRegExp(HOME_DIR)}/\\.gnupg/`),                                // GPG credentials
+	new RegExp(`^${escapeRegExp(HOME_DIR)}/Library/Keychains/`),                       // macOS Keychain
+	new RegExp(`^${escapeRegExp(HOME_DIR)}/\\.aws/credentials`),                       // AWS credentials file
+	new RegExp(`^${escapeRegExp(HOME_DIR)}/Pictures/Photos Library\\.photoslibrary/`), // Photos library (confidential)
+	new RegExp(`^/etc/`),                                                              // System configs
+	new RegExp(`^/usr/`),                                                              // System directories
+	new RegExp(`^/System/`),                                                           // macOS System
 ];
 
 // Whitelisted paths (safe explicit directories)
@@ -205,10 +226,14 @@ export default function (pi: ExtensionAPI) {
 
 	/**
 	 * Check for path traversal attacks before path resolution.
-	 * Prevents directory escaping via .. sequences.
+	 * Matches ".." only at segment boundaries (/(../), /../, or trailing /..)
+	 * to avoid false positives on filenames that legitimately contain ".." as a
+	 * substring (e.g. "/home/user/..config/foo" would wrongly trigger the old
+	 * path.includes("..") check).
 	 */
 	const hasPathTraversal = (path: string): boolean => {
-		return path.includes("..") || path.startsWith("..") || /\.\./.test(path);
+		// Matches: "../", "/..", "/../", or a bare ".." token
+		return /(?:^|\/)\.\.(\/|$)/.test(path);
 	};
 
 	/**
@@ -231,13 +256,19 @@ export default function (pi: ExtensionAPI) {
 	/**
 	 * Extract candidate file/directory paths from a bash command string.
 	 *
-	 * Strategy: after stripping the leading command token and its flags, every
-	 * remaining token that looks like an absolute path, a tilde path, or a
-	 * relative path (starts with ./ or ../) is treated as a candidate.
-	 * Tilde paths are expanded; relative paths are resolved against cwd.
+	 * Strategy: tokenise on shell boundaries, strip surrounding quotes from each
+	 * token, skip command-name tokens (via COMMAND_NAME_TOKENS) and flag tokens,
+	 * then classify remaining tokens by path shape:
+	 *   - tilde paths  (~/... or bare ~)
+	 *   - absolute paths  (/...)
+	 *   - explicit relative paths  (./... or ../...)
 	 *
-	 * This is intentionally conservative: false positives (flagging a safe path)
-	 * only trigger a consent prompt, never a silent allow.
+	 * Bare words without a leading path character are intentionally skipped to
+	 * avoid false positives on option values and non-path arguments. The
+	 * read/write tool handler covers those cases via resolved paths.
+	 *
+	 * This is intentionally conservative: a false positive only triggers a
+	 * consent prompt, never a silent allow.
 	 */
 	const extractPathsFromCommand = (command: string, cwd: string): string[] => {
 		// Split on shell token boundaries (spaces, semicolons, pipes, &&, ||)
@@ -248,11 +279,20 @@ export default function (pi: ExtensionAPI) {
 
 		const paths: string[] = [];
 
-		for (const token of tokens) {
+		for (let token of tokens) {
+			// Strip surrounding single or double quotes so quoted paths like
+			// cat "~/.ssh/config" or cat '~/.aws/credentials' are not missed.
+			if (
+				(token.startsWith('"') && token.endsWith('"')) ||
+				(token.startsWith("'") && token.endsWith("'"))
+			) {
+				token = token.slice(1, -1);
+			}
+
 			// Skip flags/options
 			if (token.startsWith("-")) continue;
-			// Skip shell keywords and common command names
-			if (READ_LIKE_COMMANDS.includes(token)) continue;
+			// Skip recognised command-name tokens (not path candidates)
+			if (COMMAND_NAME_TOKENS.has(token)) continue;
 
 			let candidate: string | null = null;
 
@@ -268,10 +308,9 @@ export default function (pi: ExtensionAPI) {
 			}
 			// Bare words (e.g. "config.json" without ./) are intentionally
 			// skipped to avoid false positives on command options and args.
-			// The read/write tool handler catches those cases instead.
 
 			if (candidate) {
-				// Strip any trailing shell redirects that may have been captured
+				// Strip any trailing shell redirects captured in the token,
 				// e.g. "~/.ssh/config>" → "~/.ssh/config"
 				candidate = candidate.replace(/[<>|&;].*$/, "");
 				paths.push(candidate);
@@ -297,8 +336,12 @@ export default function (pi: ExtensionAPI) {
 
 	/**
 	 * Process tool call with consolidated handling for bash, read, and write.
+	 *
+	 * Returns a block decision synchronously (config not loaded) or via an
+	 * awaited confirm dialog so the tool call is never executed before the user
+	 * has answered.
 	 */
-	const handleToolCall = (event: any, ctx: ExtensionContext): { block: boolean; reason: string } | undefined => {
+	const handleToolCall = async (event: any, ctx: ExtensionContext): Promise<{ block: boolean; reason: string } | undefined> => {
 		if (!configLoaded) {
 			return { block: true, reason: "Configuration not fully loaded" };
 		}
@@ -316,14 +359,19 @@ export default function (pi: ExtensionAPI) {
 	 * Handle bash tool calls.
 	 *
 	 * Two-pass check:
-	 *   1. Destructive pattern matching (existing logic, unchanged)
-	 *   2. NEW: Blacklisted path detection for read-like commands
+	 *   1. Destructive pattern matching
+	 *   2. Blacklisted path detection for read-like commands
 	 *      (catches: ls, cat, grep, find, stat, head, tail, etc. on blacklisted dirs)
+	 *
+	 * In interactive mode the confirm() dialog is awaited so the tool call is
+	 * suspended until the user explicitly approves or rejects. Previously the
+	 * promise was fire-and-forget, allowing the tool to execute before the user
+	 * responded.
 	 */
-	const handleBashTools = (
+	const handleBashTools = async (
 		input: { command?: string },
 		ctx: ExtensionContext
-	): { block: boolean; reason: string } | undefined => {
+	): Promise<{ block: boolean; reason: string } | undefined> => {
 		if (!input.command) {
 			return undefined;
 		}
@@ -331,7 +379,7 @@ export default function (pi: ExtensionAPI) {
 		const command = sanitizeCommand(input.command);
 		const effectiveCwd = ctx.cwd || process.cwd();
 
-		// ── Pass 1: Destructive pattern check (unchanged from original) ──────────
+		// ── Pass 1: Destructive pattern check ────────────────────────────────────
 		const isDangerous = dangerousBashPatterns.some((p) => p.test(command));
 		if (isDangerous) {
 			if (ctx.hasUI !== true) {
@@ -339,25 +387,22 @@ export default function (pi: ExtensionAPI) {
 				return { block: true, reason: "Dangerous command blocked (non-interactive)" };
 			}
 
-			ctx.ui
-				.confirm(
-					`⚠️ Dangerous bash command detected:\n\n          "${command}"\n\nConfirm execution?`,
-					"This operation requires explicit confirmation."
-				)
-				.then((confirmed: boolean) => {
-					if (confirmed === false) {
-						if (notificationsEnabled === true) {
-							ctx.ui.notify("Blocked: " + command, "warning");
-						}
-						console.log(`[safety-guard] User rejected dangerous command: ${command}`);
-					}
-				});
-			return undefined;
+			// Await the dialog — tool call is suspended until user responds.
+			const confirmed = await ctx.ui.confirm(
+				`⚠️ Dangerous bash command detected:\n\n          "${command}"\n\nConfirm execution?`,
+				"This operation requires explicit confirmation."
+			);
+			if (!confirmed) {
+				if (notificationsEnabled) ctx.ui.notify("Blocked: " + command, "warning");
+				console.log(`[safety-guard] User rejected dangerous command: ${command}`);
+				return { block: true, reason: "User rejected dangerous command" };
+			}
+			return undefined; // User approved
 		}
 
 		// ── Pass 2: Blacklisted path detection in bash command ───────────────────
 		//
-		// This catches read-like access to blacklisted directories via bash, e.g.:
+		// Catches read-like access to blacklisted directories via bash, e.g.:
 		//   ls -la ~/.ssh/
 		//   cat ~/.aws/credentials
 		//   grep -r "secret" ~/.gnupg/
@@ -367,8 +412,8 @@ export default function (pi: ExtensionAPI) {
 		const offendingPath = findBlacklistedPathInCommand(command, effectiveCwd);
 		if (offendingPath !== null) {
 			if (ctx.hasUI !== true) {
-				// Log only the path prefix (not the full command) to avoid leaking
-				// sensitive content in non-interactive logs.
+				// Log only the offending path (not the full command) to avoid
+				// leaking sensitive content in non-interactive logs.
 				console.log(
 					`[safety-guard] BLOCKED bash access to blacklisted path (non-interactive): ${offendingPath}`
 				);
@@ -378,22 +423,17 @@ export default function (pi: ExtensionAPI) {
 				};
 			}
 
-			ctx.ui
-				.confirm(
-					`⚠️ Bash command targets a blacklisted path:\n\n          "${offendingPath}"\n\nThis path contains credentials or confidential data. Proceed?`,
-					"Path is on blacklist for credential protection"
-				)
-				.then((confirmed: boolean) => {
-					if (confirmed === false) {
-						if (notificationsEnabled === true) {
-							ctx.ui.notify("Blocked: access to " + offendingPath, "warning");
-						}
-						console.log(
-							`[safety-guard] User rejected bash access to blacklisted path: ${offendingPath}`
-						);
-					}
-				});
-			return undefined;
+			// Await the dialog — tool call is suspended until user responds.
+			const confirmed = await ctx.ui.confirm(
+				`⚠️ Bash command targets a blacklisted path:\n\n          "${offendingPath}"\n\nThis path contains credentials or confidential data. Proceed?`,
+				"Path is on blacklist for credential protection"
+			);
+			if (!confirmed) {
+				if (notificationsEnabled) ctx.ui.notify("Blocked: access to " + offendingPath, "warning");
+				console.log(`[safety-guard] User rejected bash access to blacklisted path: ${offendingPath}`);
+				return { block: true, reason: `User rejected bash access to blacklisted path: ${offendingPath}` };
+			}
+			return undefined; // User approved
 		}
 
 		return undefined;
@@ -403,14 +443,14 @@ export default function (pi: ExtensionAPI) {
 	 * Handle file I/O tool calls (read/write) with path validation.
 	 * Uses checkPathSecurity() with Blacklist priority first.
 	 *
-	 * FIX: toolName is now passed as an explicit parameter (was incorrectly
-	 * accessed as input.toolName in the original code).
+	 * All ctx.ui.confirm() calls are awaited so the tool call is suspended until
+	 * the user explicitly approves or rejects (previously fire-and-forget).
 	 */
-	const handleFileIOTools = (
+	const handleFileIOTools = async (
 		toolName: string,
 		input: { path?: string },
 		ctx: ExtensionContext
-	): { block: boolean; reason: string } | undefined => {
+	): Promise<{ block: boolean; reason: string } | undefined> => {
 		if (!input.path) {
 			return undefined;
 		}
@@ -439,20 +479,17 @@ export default function (pi: ExtensionAPI) {
 				};
 			}
 
-			ctx.ui
-				.confirm(
-					`⚠️ Blacklisted path detected (BLACKLIST priority):\n\n          "${pathParam}"\n\nThis is a blocked credentials/confidential directory. Proceed?`,
-					"Path is on blacklist for credential protection"
-				)
-				.then((confirmed: boolean) => {
-					if (confirmed === false) {
-						if (notificationsEnabled === true) {
-							ctx.ui.notify("Blocked: " + pathParam, "warning");
-						}
-						console.log(`[safety-guard] User rejected blacklisted path: ${resolvedPath}`);
-					}
-				});
-			return undefined;
+			// Await the dialog — tool call is suspended until user responds.
+			const confirmed = await ctx.ui.confirm(
+				`⚠️ Blacklisted path detected (BLACKLIST priority):\n\n          "${pathParam}"\n\nThis is a blocked credentials/confidential directory. Proceed?`,
+				"Path is on blacklist for credential protection"
+			);
+			if (!confirmed) {
+				if (notificationsEnabled) ctx.ui.notify("Blocked: " + pathParam, "warning");
+				console.log(`[safety-guard] User rejected blacklisted path: ${resolvedPath}`);
+				return { block: true, reason: "User rejected blacklisted path" };
+			}
+			return undefined; // User approved
 		}
 
 		// WHITELIST: Allow automatically
@@ -462,34 +499,28 @@ export default function (pi: ExtensionAPI) {
 		}
 
 		// DEFAULT: Require consent
-		if (securityLevel === "CONSENT_REQUIRED") {
-			if (ctx.hasUI !== true) {
-				console.log(
-					`[safety-guard] BLOCKED ${toolName} operation (non-interactive): ${pathParam}`
-				);
-				return {
-					block: true,
-					reason: "Path requires consent (not whitelisted)",
-				};
-			}
-
-			ctx.ui
-				.confirm(
-					`⚠️ Path requires consent:\n\n          "${pathParam}"\n\nConfirm execution?`,
-					"Default action: require consent (not in whitelist)"
-				)
-				.then((confirmed: boolean) => {
-					if (confirmed === false) {
-						if (notificationsEnabled === true) {
-							ctx.ui.notify("Blocked: " + pathParam, "warning");
-						}
-						console.log(`[safety-guard] User rejected consent for path: ${resolvedPath}`);
-					}
-				});
-			return undefined;
+		// securityLevel === "CONSENT_REQUIRED" (exhaustive — only remaining case)
+		if (ctx.hasUI !== true) {
+			console.log(
+				`[safety-guard] BLOCKED ${toolName} operation (non-interactive): ${pathParam}`
+			);
+			return {
+				block: true,
+				reason: "Path requires consent (not whitelisted)",
+			};
 		}
 
-		return undefined;
+		// Await the dialog — tool call is suspended until user responds.
+		const confirmed = await ctx.ui.confirm(
+			`⚠️ Path requires consent:\n\n          "${pathParam}"\n\nConfirm execution?`,
+			"Default action: require consent (not in whitelist)"
+		);
+		if (!confirmed) {
+			if (notificationsEnabled) ctx.ui.notify("Blocked: " + pathParam, "warning");
+			console.log(`[safety-guard] User rejected consent for path: ${resolvedPath}`);
+			return { block: true, reason: "User rejected consent for path" };
+		}
+		return undefined; // User approved
 	};
 
 	/**
@@ -533,25 +564,37 @@ export default function (pi: ExtensionAPI) {
 				if (!validation.valid) {
 					console.error(`[safety-guard] Config validation failed: ${validation.errors.join(", ")}`);
 				} else {
+					// Config allowedPaths are stored separately and merged with base
+					// paths below. They are NOT applied here to avoid being overwritten
+					// by the base path assignment that follows.
 					if (validation.allowedPaths) {
+						// Expand tildes now; merging happens after base paths are set.
 						allowedPaths = validation.allowedPaths.map(expandTilde);
 					}
 					if (validation.notificationsEnabled !== undefined) {
 						notificationsEnabled = validation.notificationsEnabled;
 					}
 					console.log(
-						`[safety-guard] Config validated: ${allowedPaths.length} allowed paths, notifications=${notificationsEnabled}`
+						`[safety-guard] Config validated: ${allowedPaths.length} user-defined paths, notifications=${notificationsEnabled}`
 					);
 				}
 			} else {
 				console.log("[safety-guard] No config found, using defaults (notify=true, allowed=~/.pi/)");
 			}
 
-			// Base whitelist (always applied, overrides any config-loaded allowedPaths above)
-			allowedPaths = [
+			// Base whitelist paths (always included, merged with any config paths).
+			// Config paths are preserved from the block above; base paths are added
+			// here so user-defined entries and built-in entries both take effect.
+			const basePaths = [
 				expandTilde("~/.pi/"),
 				expandTilde("/opt/homebrew/lib/node_modules/@mariozechner/pi-coding-agent/"),
 			];
+			// Merge: base paths first, then config paths (deduped)
+			const mergedPaths = [...basePaths];
+			for (const p of allowedPaths) {
+				if (!mergedPaths.includes(p)) mergedPaths.push(p);
+			}
+			allowedPaths = mergedPaths;
 
 			// Dynamic project directory ALWAYS added at session start
 			allowedPaths.push(effectiveCwd);
@@ -583,13 +626,4 @@ export default function (pi: ExtensionAPI) {
 
 	// Register consolidated tool_call handler
 	pi.on("tool_call", handleToolCall);
-}
-
-/**
- * Escape a string for use as a RegExp literal.
- * Prevents special characters in file paths (e.g. dots, parens) from being
- * misinterpreted as regex metacharacters in WHITELIST entries.
- */
-function escapeRegExp(s: string): string {
-	return s.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
 }
