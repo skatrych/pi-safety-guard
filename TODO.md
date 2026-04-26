@@ -13,6 +13,7 @@
 - [ ] 9: Review and improve bash command sanitization patterns
 - [ ] 10: Enhance logging for blocked/rejected operations
 - [ ] 11: Strictly enforce BLACKLIST policy by disabling interactive user overrides
+- [ ] 12: Detect blacklisted paths in bash pipes and output redirects (e.g., `> .env`, `| tee .env`)
 
 
 ## TASK DESCRIPTION
