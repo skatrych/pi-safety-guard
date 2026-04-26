@@ -109,7 +109,8 @@ export const handleFileIOTools = async (
 	}
 
 	const effectiveCwd = ctx.cwd || process.cwd();
-	const resolvedPath = resolve(effectiveCwd, pathParam);
+	const expandedPathParam = expandTilde(pathParam);
+	const resolvedPath = resolve(effectiveCwd, expandedPathParam);
 	const securityLevel = checkPathSecurity(resolvedPath);
 
 	// HIGHEST PRIORITY: BLACKLIST

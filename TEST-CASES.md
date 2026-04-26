@@ -502,10 +502,10 @@
 - **Action:** Trigger `tool_call` for `new_custom_tool`.
 - **Expected:** Extension does not intercept; demonstrating current scope limitation.
 
-### TC-GAP-02: File I/O Tilde Paths Are Not Expanded
+### TC-GAP-02: File I/O Tilde Paths Are Correctly Expanded and Protected
 - **Context:** `read`, `write`, or `edit` receives a path beginning with `~`.
 - **Action:** Trigger `read { path: "~/.ssh/config" }`.
-- **Expected:** Current implementation does not expand `~` for file I/O tool inputs; behavior follows normal cwd-based `resolve(...)` semantics rather than home-directory expansion.
+- **Expected:** `~` is expanded to the home directory before resolution and security checks; resulting path is treated as blacklisted.
 
 ### TC-GAP-03: Prompt Policy Is Stricter Than Runtime Enforcement
 - **Context:** Prompt policy claims restricted operations are enforced and cannot be bypassed.

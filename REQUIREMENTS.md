@@ -127,10 +127,10 @@ Configured allowed paths from `extensions.allowedPaths` are:
 - merged with base whitelist paths
 - deduplicated at string level before whitelist regex rebuild
 
-Important distinction:
+Tilde handling:
 - tilde expansion is implemented for configured allowed paths
 - tilde expansion is also implemented for bash path extraction
-- tilde expansion is **not currently implemented** for `read` / `write` / `edit` tool input paths
+- tilde expansion is implemented for `read` / `write` / `edit` tool input paths before resolution
 
 ### 6.4. Runtime whitelist rebuilding
 The exported `WHITELIST` array is mutable and is fully rebuilt during each `session_start` based on merged allowed paths.
@@ -249,9 +249,8 @@ Traversal detection is intentionally narrower than a raw substring check and sho
 
 ### 10.3. Resolution behavior
 For monitored file I/O tools:
-- the supplied path is resolved against effective cwd
-- `read` / `write` / `edit` inputs are **not** tilde-expanded before resolution
-- therefore a path beginning with `~` is not treated as a home-directory path by current implementation
+- the supplied path is tilde-expanded first (for `~`-prefixed inputs)
+- the expanded path is resolved against effective cwd
 - the resolved path is checked through blacklist-first security logic
 
 ### 10.4. Decision behavior for file I/O
