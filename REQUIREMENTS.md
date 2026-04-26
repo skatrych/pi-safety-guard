@@ -135,12 +135,8 @@ Important distinction:
 ### 6.4. Runtime whitelist rebuilding
 The exported `WHITELIST` array is mutable and is fully rebuilt during each `session_start` based on merged allowed paths.
 
-### 6.5. Runtime blacklist accumulation
-The exported `BLACKLIST` array is mutable and receives additional project-specific `.env` entries during each `session_start`.
-
-Current observable behavior:
-- project-specific blacklist entries accumulate across multiple sessions in the same process
-- they are not cleared before new session entries are appended
+### 6.5. Runtime blacklist management
+The exported `BLACKLIST` array is mutable. At each `session_start`, it is reset to the base hardcoded blacklist entries and then augmented with project-specific `.env` entries for the current working directory. This ensures that blacklist entries from previous sessions do not accumulate.
 
 ## 7. Project-Specific Secret Protection
 
@@ -332,4 +328,3 @@ Current implementation limitations that should be preserved or intentionally add
 - unmonitored tools are not protected
 - prompt policy is stricter than runtime enforcement because interactive confirmation can still allow blacklisted paths and dangerous commands
 - bash path extraction ignores bare filenames
-- project blacklist entries accumulate across sessions in the same process
