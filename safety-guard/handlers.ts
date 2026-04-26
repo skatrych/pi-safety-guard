@@ -73,18 +73,21 @@ export const handleBashTools = async (
 };
 
 /**
- * Handle file I/O tool calls (read/write) with path validation.
+ * Handle file I/O tool calls (read/write/edit) with path validation.
  */
 export const handleFileIOTools = async (
-	toolName: string,
-	input: { path?: string },
+	toolName: "read" | "write" | "edit",
+	input: unknown,
 	ctx: ExtensionContext
 ): Promise<{ block: boolean; reason: string } | undefined> => {
-	if (!input.path) {
+	if (!input || typeof input !== "object") {
 		return undefined;
 	}
 
-	const pathParam = input.path;
+	const pathParam = (input as { path?: unknown }).path;
+	if (typeof pathParam !== "string" || pathParam.length === 0) {
+		return undefined;
+	}
 
 	// Check path traversal before resolution
 	if (hasPathTraversal(pathParam)) {
@@ -161,7 +164,7 @@ export const handleToolCall = async (event: ToolCallEvent, ctx: ExtensionContext
 
 	if (event.toolName === "bash") {
 		return handleBashTools(event.input, ctx);
-	} else if (event.toolName === "read" || event.toolName === "write") {
+	} else if (event.toolName === "read" || event.toolName === "write" || event.toolName === "edit") {
 		return handleFileIOTools(event.toolName, event.input, ctx);
 	}
 

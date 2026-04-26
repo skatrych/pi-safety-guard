@@ -10,10 +10,10 @@ The extension explicitly monitors only these tool calls:
 - `bash`
 - `read`
 - `write`
+- `edit`
 
 ### 2.2. Unmonitored tools
 All other tools are currently outside the enforcement scope of this extension and pass through without intervention, including:
-- `edit`
 - any custom or future tools not explicitly handled
 
 This is an important current limitation and security boundary.
@@ -129,7 +129,7 @@ Configured allowed paths from `extensions.allowedPaths` are:
 Important distinction:
 - tilde expansion is implemented for configured allowed paths
 - tilde expansion is also implemented for bash path extraction
-- tilde expansion is **not currently implemented** for `read` / `write` tool input paths
+- tilde expansion is **not currently implemented** for `read` / `write` / `edit` tool input paths
 
 ### 6.4. Runtime whitelist rebuilding
 The exported `WHITELIST` array is mutable and is fully rebuilt during each `session_start` based on merged allowed paths.
@@ -240,7 +240,7 @@ The bash parser:
 ### 9.1. Consequence of parser conservatism
 Because bare words are ignored, some file references in bash commands may not be detected by path extraction unless they use explicit path syntax.
 
-## 10. File I/O Protection (`read` and `write`)
+## 10. File I/O Protection (`read`, `write`, and `edit`)
 
 ### 10.1. Path traversal detection
 Before path resolution, the extension blocks paths matching traversal semantics using `..` at path-segment boundaries.
@@ -253,12 +253,12 @@ Traversal detection is intentionally narrower than a raw substring check and sho
 ### 10.3. Resolution behavior
 For monitored file I/O tools:
 - the supplied path is resolved against effective cwd
-- `read` / `write` inputs are **not** tilde-expanded before resolution
+- `read` / `write` / `edit` inputs are **not** tilde-expanded before resolution
 - therefore a path beginning with `~` is not treated as a home-directory path by current implementation
 - the resolved path is checked through blacklist-first security logic
 
 ### 10.4. Decision behavior for file I/O
-For `read` and `write`:
+For `read`, `write`, and `edit`:
 - blacklist match:
   - interactive: confirmation required
   - non-interactive: blocked
@@ -269,7 +269,7 @@ For `read` and `write`:
   - non-interactive: blocked
 
 ### 10.5. Missing input behavior
-If `read` or `write` input does not contain `path`, the extension returns without intervention.
+If `read`, `write`, or `edit` input does not contain a usable string `path`, the extension returns without intervention.
 
 ## 11. Prompt Augmentation Behavior
 The extension appends a security policy block to prompt fields if present.
@@ -324,11 +324,11 @@ The extension returns without intervention when:
 - a monitored `bash` call has no `command`
 - a monitored `read` call has no `path`
 - a monitored `write` call has no `path`
+- a monitored `edit` call has no usable string `path`
 - an unmonitored tool is invoked
 
 ## 14. Known Gaps / Current Limitations
 Current implementation limitations that should be preserved or intentionally addressed in refactoring:
-- `edit` tool is not protected
 - unmonitored tools are not protected
 - prompt policy is broader than enforced blacklist in at least the `~/.kube/` case
 - prompt policy is stricter than runtime enforcement because interactive confirmation can still allow blacklisted paths and dangerous commands
