@@ -106,6 +106,7 @@ export const BLACKLIST: RegExp[] = [
 	new RegExp(`^${escapeRegExp(HOME_DIR)}/\\.gnupg/`),                                // GPG credentials
 	new RegExp(`^${escapeRegExp(HOME_DIR)}/Library/Keychains/`),                       // macOS Keychain
 	new RegExp(`^${escapeRegExp(HOME_DIR)}/\\.aws/credentials`),                       // AWS credentials file
+	new RegExp(`^${escapeRegExp(HOME_DIR)}/\\.kube/`),                                  // Kubernetes credentials
 	new RegExp(`^${escapeRegExp(HOME_DIR)}/Pictures/Photos Library\\.photoslibrary/`), // Photos library (confidential)
 	new RegExp(`^${escapeRegExp(HOME_DIR)}/\\.env$`),                                  // ~/.env (home-level secrets)
 	new RegExp(`^${escapeRegExp(HOME_DIR)}/\\.env\\.`),                                // ~/.env.* (e.g. ~/.env.local)

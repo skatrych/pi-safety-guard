@@ -147,6 +147,7 @@
   - `<HOME>/.gnupg/pubring.kbx`
   - `<HOME>/Library/Keychains/login.keychain-db`
   - `<HOME>/.aws/credentials`
+  - `<HOME>/.kube/`
   - `<HOME>/Pictures/Photos Library.photoslibrary/database`
   - `<HOME>/.env`
   - `<HOME>/.env.local`
@@ -501,17 +502,12 @@
 - **Action:** Trigger `tool_call` for `new_custom_tool`.
 - **Expected:** Extension does not intercept; demonstrating current scope limitation.
 
-### TC-GAP-02: Prompt Policy vs Enforcement Mismatch for `~/.kube`
-- **Context:** Prompt policy text mentions `~/.kube/` but hardcoded blacklist does not.
-- **Action:** Verify prompt contents and compare with enforced blacklist behavior.
-- **Expected:** Policy mentions `~/.kube/`, but path is not covered by the hardcoded blacklist unless other logic blocks it.
-
-### TC-GAP-03: File I/O Tilde Paths Are Not Expanded
+### TC-GAP-02: File I/O Tilde Paths Are Not Expanded
 - **Context:** `read`, `write`, or `edit` receives a path beginning with `~`.
 - **Action:** Trigger `read { path: "~/.ssh/config" }`.
 - **Expected:** Current implementation does not expand `~` for file I/O tool inputs; behavior follows normal cwd-based `resolve(...)` semantics rather than home-directory expansion.
 
-### TC-GAP-04: Prompt Policy Is Stricter Than Runtime Enforcement
+### TC-GAP-03: Prompt Policy Is Stricter Than Runtime Enforcement
 - **Context:** Prompt policy claims restricted operations are enforced and cannot be bypassed.
 - **Action:** In interactive mode, trigger a blacklisted path access or dangerous bash command and approve the confirmation dialog.
 - **Expected:** Operation is allowed after user approval, demonstrating that runtime enforcement is weaker than the prompt wording.

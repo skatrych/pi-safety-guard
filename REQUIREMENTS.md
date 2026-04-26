@@ -103,6 +103,7 @@ The extension hardcodes protection for these path families:
 - `~/.gnupg/`
 - `~/Library/Keychains/`
 - `~/.aws/credentials`
+- `~/.kube/`
 - `~/Pictures/Photos Library.photoslibrary/`
 - `~/.env`
 - `~/.env.*`
@@ -290,8 +291,7 @@ The appended policy communicates restrictions around:
 - Kubernetes secrets
 
 ### 11.4. Prompt-policy mismatch currently present
-The prompt policy is stricter than runtime enforcement in at least two ways:
-- the prompt policy mentions `~/.kube/`, but the hardcoded blacklist does not explicitly enforce `~/.kube/` access
+The prompt policy is stricter than runtime enforcement:
 - the prompt policy states restrictions are enforced and cannot be bypassed, but runtime behavior still allows interactive user override for blacklisted paths and dangerous commands via confirmation dialogs
 
 ## 12. User Interaction, Notifications, and Logging
@@ -330,7 +330,6 @@ The extension returns without intervention when:
 ## 14. Known Gaps / Current Limitations
 Current implementation limitations that should be preserved or intentionally addressed in refactoring:
 - unmonitored tools are not protected
-- prompt policy is broader than enforced blacklist in at least the `~/.kube/` case
 - prompt policy is stricter than runtime enforcement because interactive confirmation can still allow blacklisted paths and dangerous commands
 - bash path extraction ignores bare filenames
 - project blacklist entries accumulate across sessions in the same process
