@@ -9,7 +9,7 @@
 
 ### TC-LIFE-02: Unmonitored Tool Pass-Through
 - **Context:** A tool outside extension scope is called.
-- **Action:** Trigger `tool_call` for `edit`.
+- **Action:** Trigger `tool_call` for `list_files`.
 - **Expected:** Extension returns `undefined`; tool is not intercepted.
 
 ### TC-LIFE-03: Missing Bash Command Input
@@ -271,7 +271,74 @@
 
 ---
 
-## 7. Bash Path Extraction and Blacklisted Path Detection
+## 7. File I/O Protection - `edit`
+
+### TC-EDIT-01: Whitelisted Edit Allowed
+- **Context:** Session initialized with cwd `/prj/app`.
+- **Action:** Trigger `edit { path: "src/index.ts", edits: [...] }`.
+- **Expected:** Resolved path is inside project whitelist; access is allowed automatically.
+
+### TC-EDIT-02: Blacklisted Edit Interactive Approve/Reject
+- **Context:** Interactive session.
+- **Action:** Trigger `edit { path: "<HOME>/.ssh/config", edits: [...] }`.
+- **Expected:** Confirmation prompt shown; rejection blocks, approval allows.
+
+### TC-EDIT-03: Consent-Required Edit Interactive Approve/Reject
+- **Context:** Interactive session.
+- **Action:** Trigger `edit { path: "/tmp/report.txt", edits: [...] }`.
+- **Expected:** Consent prompt shown; rejection blocks, approval allows.
+
+### TC-EDIT-04: Blacklisted Edit Non-Interactive
+- **Context:** `ctx.hasUI = false`.
+- **Action:** Trigger `edit { path: "<HOME>/.ssh/config", edits: [...] }`.
+- **Expected:** Operation is blocked.
+
+### TC-EDIT-05: Consent-Required Edit Non-Interactive
+- **Context:** `ctx.hasUI = false`.
+- **Action:** Trigger `edit { path: "/tmp/report.txt", edits: [...] }`.
+- **Expected:** Operation is blocked.
+
+### TC-EDIT-06: Whitelisted Edit Non-Interactive
+- **Context:** `ctx.hasUI = false`, cwd initialized and whitelisted.
+- **Action:** Trigger `edit { path: "src/index.ts", edits: [...] }`.
+- **Expected:** Operation is allowed automatically.
+
+### TC-EDIT-07: Edit Traversal Block
+- **Context:** Attempt to escape current directory constraints.
+- **Action:** Trigger `edit { path: "../../../etc/passwd", edits: [...] }`.
+- **Expected:** Blocked with reason `"Path traversal detected"`.
+
+### TC-EDIT-08: Edit Home `.env` Variant Protection
+- **Context:** Interactive session.
+- **Action:** Trigger `edit { path: "<HOME>/.env.local", edits: [...] }`.
+- **Expected:** Blacklisted; confirmation required.
+
+### TC-EDIT-09: Edit Project `.env` Variant Protection Matrix
+- **Context:** Session initialized with cwd `/prj/app`.
+- **Action:** Trigger `edit` for:
+  - `.env`
+  - `.env.local`
+  - `packages/api/.env`
+- **Expected:** Each path is treated as blacklisted by project-specific runtime rules.
+
+### TC-EDIT-10: Missing Edit Path Input
+- **Context:** `edit` tool call lacks `path`.
+- **Action:** Trigger `tool_call` for `edit` with `{ edits: [...] }`.
+- **Expected:** Extension returns `undefined`.
+
+### TC-EDIT-11: Non-String Edit Path Input
+- **Context:** `edit` tool call has a non-string `path`.
+- **Action:** Trigger `tool_call` for `edit` with `{ path: 123, edits: [...] }`.
+- **Expected:** Extension returns `undefined`.
+
+### TC-EDIT-12: Edit Content Privacy
+- **Context:** Any `edit` tool call.
+- **Action:** Inspect logs and user prompts.
+- **Expected:** Neither the logs nor the prompts contain the `edits`, `oldText`, or `newText` content. Only the path and decision are visible.
+
+---
+
+## 8. Bash Path Extraction and Blacklisted Path Detection
 
 ### TC-BASH-PATH-01: Tilde Path Detection
 - **Context:** Interactive session.
@@ -325,7 +392,7 @@
 
 ---
 
-## 8. Dangerous Bash Pattern Coverage
+## 9. Dangerous Bash Pattern Coverage
 
 ### TC-BASH-DANGER-01: Deletion Family
 - **Action:** Execute representative commands:
@@ -394,7 +461,7 @@
 
 ---
 
-## 9. Non-Interactive Logging and Sensitive Output Behavior
+## 10. Non-Interactive Logging and Sensitive Output Behavior
 
 ### TC-LOG-01: Non-Interactive Blacklisted Bash Path Logging
 - **Context:** `ctx.hasUI = false`.
@@ -413,7 +480,7 @@
 
 ---
 
-## 10. Notifications
+## 11. Notifications
 
 ### TC-NOTIFY-01: Notifications Enabled on User Rejection
 - **Context:** `extensions.notificationsEnabled = true`, interactive session.
@@ -427,12 +494,12 @@
 
 ---
 
-## 11. Known Gap Verification
+## 12. Known Gap Verification
 
-### TC-GAP-01: `edit` Tool Not Protected
-- **Context:** Security-sensitive path is targeted through `edit` tool.
-- **Action:** Trigger `tool_call` for `edit` on a protected path.
-- **Expected:** Extension does not intercept, demonstrating current scope limitation.
+### TC-GAP-01: Unmonitored Tools
+- **Context:** A custom or future tool not explicitly handled is used.
+- **Action:** Trigger `tool_call` for `new_custom_tool`.
+- **Expected:** Extension does not intercept; demonstrating current scope limitation.
 
 ### TC-GAP-02: Prompt Policy vs Enforcement Mismatch for `~/.kube`
 - **Context:** Prompt policy text mentions `~/.kube/` but hardcoded blacklist does not.
@@ -440,7 +507,7 @@
 - **Expected:** Policy mentions `~/.kube/`, but path is not covered by the hardcoded blacklist unless other logic blocks it.
 
 ### TC-GAP-03: File I/O Tilde Paths Are Not Expanded
-- **Context:** `read` or `write` receives a path beginning with `~`.
+- **Context:** `read`, `write`, or `edit` receives a path beginning with `~`.
 - **Action:** Trigger `read { path: "~/.ssh/config" }`.
 - **Expected:** Current implementation does not expand `~` for file I/O tool inputs; behavior follows normal cwd-based `resolve(...)` semantics rather than home-directory expansion.
 
