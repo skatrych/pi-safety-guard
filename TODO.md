@@ -4,7 +4,7 @@
 
 - [x] 1: Implement monitoring for 'edit' tool calls
 - [x] 2: Add ~/.kube/ to hardcoded blacklist to match prompt policy
-- [ ] 3: Fix project-specific blacklist accumulation across sessions
+- [x] 3: Fix project-specific blacklist accumulation across sessions
 - [ ] 4: Implement tilde expansion for 'read' and 'write' tool paths
 - [ ] 5: Improve bash path extraction to detect bare filenames
 - [ ] 6: Align prompt policy with runtime reality regarding bypassability
