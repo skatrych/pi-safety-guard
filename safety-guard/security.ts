@@ -19,6 +19,17 @@ export const checkPathSecurity = (path: string): "ALLOW" | "CONSENT_REQUIRED" | 
 	return "CONSENT_REQUIRED";
 };
 
+const isLikelyBarePathToken = (token: string): boolean => {
+	// Conservative bare-token heuristic to reduce false positives.
+	if (token.length === 0) return false;
+	if (token.startsWith("$")) return false; // variable expansion / env references
+	if (token.includes("=")) return false; // env assignment / key=value args
+	if (/^[a-zA-Z][a-zA-Z0-9+.-]*:\/\//.test(token)) return false; // URLs
+	if (/[*?\[\]{}]/.test(token)) return false; // shell globs / brace expansion
+
+	return token.startsWith(".") || token.includes("/") || token.includes(".");
+};
+
 /**
  * Extract candidate file/directory paths from a bash command string.
  */
@@ -40,6 +51,10 @@ export const extractPathsFromCommand = (command: string, cwd: string): string[] 
 			token = token.slice(1, -1);
 		}
 
+		// Remove trailing shell redirect/operator fragments
+		token = token.replace(/[<>|&;].*$/, "");
+		if (!token) continue;
+
 		// Skip flags/options
 		if (token.startsWith("-")) continue;
 		// Skip recognised command-name tokens (not path candidates)
@@ -56,11 +71,12 @@ export const extractPathsFromCommand = (command: string, cwd: string): string[] 
 		} else if (token.startsWith("./") || token.startsWith("../")) {
 			// Explicit relative path
 			candidate = resolve(cwd, token);
+		} else if (isLikelyBarePathToken(token)) {
+			// Bare filename/path token resolved relative to cwd
+			candidate = resolve(cwd, token);
 		}
 
 		if (candidate) {
-			// Strip any trailing shell redirects captured in the token
-			candidate = candidate.replace(/[<>|&;].*$/, "");
 			paths.push(candidate);
 		}
 	}

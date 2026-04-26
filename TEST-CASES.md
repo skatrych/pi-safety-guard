@@ -381,15 +381,30 @@
 - **Action:** Execute `bash` command `cat ~/.ssh/config`.
 - **Expected:** `cat` is skipped as command token; path token is still extracted.
 
-### TC-BASH-PATH-09: Bare Filename Intentionally Ignored
-- **Context:** Interactive session.
-- **Action:** Execute `bash` command `cat secrets.json`.
-- **Expected:** `secrets.json` is not treated as a path candidate by bash parsing.
+### TC-BASH-PATH-09: Bare Filename Detection (`.env`)
+- **Context:** Session initialized with cwd `/prj/app` and project `.env` blacklist active.
+- **Action:** Execute `bash` command `cat .env`.
+- **Expected:** Bare token `.env` is treated as a path candidate, resolves to `/prj/app/.env`, and is treated as blacklisted.
 
 ### TC-BASH-PATH-10: Blacklist Overrides Whitelist for Bash Path Access
 - **Context:** User configured `~/.ssh` in `extensions.allowedPaths`.
 - **Action:** Execute `bash` command `cat ~/.ssh/id_rsa`.
 - **Expected:** Path is still treated as blacklisted.
+
+### TC-BASH-PATH-11: Bare Filename Detection (`.env.local`)
+- **Context:** Session initialized with cwd `/prj/app` and project `.env` blacklist active.
+- **Action:** Execute `bash` command `cat .env.local`.
+- **Expected:** Bare token `.env.local` is treated as a path candidate, resolves to `/prj/app/.env.local`, and is treated as blacklisted.
+
+### TC-BASH-PATH-12: Bare Relative Subpath Detection
+- **Context:** Session initialized with cwd `/prj/app` and project `.env` blacklist active.
+- **Action:** Execute `bash` command `cat packages/api/.env`.
+- **Expected:** Bare subpath token is treated as a path candidate, resolves to `/prj/app/packages/api/.env`, and is treated as blacklisted.
+
+### TC-BASH-PATH-13: Conservative Bare-Token Filtering
+- **Context:** Interactive session.
+- **Action:** Execute `bash` command `echo package-name`.
+- **Expected:** `package-name` is not treated as a path candidate by bash parsing.
 
 ---
 

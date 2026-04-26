@@ -220,22 +220,23 @@ The bash parser:
 - tokenizes on shell-like separators such as whitespace, `;`, `|`, and `&`
 - trims tokens
 - strips surrounding single or double quotes
+- strips trailing shell redirect/operator fragments from candidate tokens
 - skips option-like tokens beginning with `-`
 - skips known command/program names from `COMMAND_NAME_TOKENS`
 - does **not** treat that token list as a security policy list; it is only a parsing skip list
 - intentionally does **not** include `.` in the skip list
-- extracts only explicit path shapes:
+- extracts explicit path shapes:
   - `~`
   - `~/...`
   - `/...`
   - `./...`
   - `../...`
-- resolves explicit relative paths against cwd
-- strips trailing shell redirect/operator fragments from extracted candidates
-- intentionally ignores bare words such as `config.json` to reduce false positives
+- additionally extracts conservative bare/path-like tokens (for example `.env`, `.env.local`, `config.json`, `dir/file.txt`)
+- resolves explicit relative paths and extracted bare/path-like tokens against cwd
+- applies conservative bare-token filters to reduce false positives (for example skipping URLs, variable-prefixed tokens, `key=value` assignments, and glob-like tokens)
 
 ### 9.1. Consequence of parser conservatism
-Because bare words are ignored, some file references in bash commands may not be detected by path extraction unless they use explicit path syntax.
+Because bare-token extraction is heuristic and intentionally conservative, some complex shell expressions may still evade path extraction unless they are represented as direct path-like tokens.
 
 ## 10. File I/O Protection (`read`, `write`, and `edit`)
 
@@ -326,4 +327,4 @@ The extension returns without intervention when:
 Current implementation limitations that should be preserved or intentionally addressed in refactoring:
 - unmonitored tools are not protected
 - prompt policy is stricter than runtime enforcement because interactive confirmation can still allow blacklisted paths and dangerous commands
-- bash path extraction ignores bare filenames
+- bash path extraction is heuristic and may miss complex shell-expanded references
