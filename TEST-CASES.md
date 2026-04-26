@@ -61,10 +61,10 @@
 - **Action:** Run `session_start`.
 - **Expected:** Runtime blacklist gains patterns covering `/prj/app/.env`, `/prj/app/.env.*`, and nested equivalents.
 
-### TC-INIT-07: Repeated Session Accumulation Behavior
+### TC-INIT-07: Repeated Session Reset Behavior
 - **Context:** Same extension instance handles multiple `session_start` events in one process.
-- **Action:** Run `session_start` twice for same cwd.
-- **Expected:** Additional project `.env` blacklist regexes are appended again; current implementation accumulates entries rather than resetting them.
+- **Action:** Run `session_start` for cwd `/prj/app`, then run `session_start` again for cwd `/prj/other`.
+- **Expected:** Runtime blacklist keeps static built-in entries and exactly one project-specific `.env` pair for the current cwd (`/prj/other`). Entries for `/prj/app` are no longer present.
 
 ---
 

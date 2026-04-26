@@ -8,6 +8,19 @@ import { findBlacklistedPathInCommand, checkPathSecurity } from "./security";
 import { validateConfig } from "./config";
 import { appendSecurityPolicy } from "./prompt";
 
+const STATIC_BLACKLIST = [...BLACKLIST];
+
+const rebuildSessionBlacklist = (cwd: string): void => {
+	BLACKLIST.length = 0;
+	BLACKLIST.push(...STATIC_BLACKLIST);
+
+	const cwdEscaped = escapeRegExp(cwd);
+	BLACKLIST.push(
+		new RegExp(`^${cwdEscaped}/(?:.+/)?\\.env$`),
+		new RegExp(`^${cwdEscaped}/(?:.+/)?\\.env\\.`),
+	);
+};
+
 /**
  * Handle bash tool calls.
  */
@@ -256,12 +269,7 @@ export const onSessionStart = (event: SessionStartEvent, ctx: ExtensionContext) 
 			WHITELIST.push(new RegExp(`^${escapeRegExp(p)}`));
 		}
 
-		// Blacklist project-specific .env files
-		const cwdEscaped = escapeRegExp(effectiveCwd);
-		BLACKLIST.push(
-			new RegExp(`^${cwdEscaped}/(?:.+/)?\\.env$`),
-			new RegExp(`^${cwdEscaped}/(?:.+/)?\\.env\\.`),
-		);
+		rebuildSessionBlacklist(effectiveCwd);
 		console.log(`[safety-guard] .env blacklist entries added for project directory (all depths): ${effectiveCwd}, security policy appended to system prompt`);
 
 		state.configLoaded = true;
@@ -278,11 +286,7 @@ export const onSessionStart = (event: SessionStartEvent, ctx: ExtensionContext) 
 		for (const p of state.allowedPaths) {
 			WHITELIST.push(new RegExp(`^${escapeRegExp(p)}`));
 		}
-		const cwdEscaped = escapeRegExp(fallbackCwd);
-		BLACKLIST.push(
-			new RegExp(`^${cwdEscaped}/(?:.+/)?\\.env$`),
-			new RegExp(`^${cwdEscaped}/(?:.+/)?\\.env\\.`),
-		);
+		rebuildSessionBlacklist(fallbackCwd);
 		state.configLoaded = true;
 	}
 };
