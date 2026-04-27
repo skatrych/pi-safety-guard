@@ -1,131 +1,155 @@
-# Implementation Plan for Task 5
+# Implementation Plan for Task 11
 
 ## Task
-Improve bash path extraction to detect bare filenames, based on `TODO.md` task 5, while keeping `REQUIREMENTS.md` and `TEST-CASES.md` consistent.
+Strictly enforce `BLACKLIST` policy by disabling interactive user overrides, based on task 11 in `TODO.md`, while keeping `REQUIREMENTS.md` and `TEST-CASES.md` aligned.
 
 ## Goal
-Close the current security gap where bash commands referencing sensitive files via bare filenames (for example `cat .env` or `cat config.json`) are ignored by the bash path extractor because they do not start with `~`, `/`, `./`, or `../`.
+Make blacklisted path protection non-bypassable at runtime for all monitored tool flows:
+- `bash` commands that target blacklisted paths
+- file I/O tools: `read`, `write`, and `edit`
 
-## Planned Changes
+At the same time, preserve the existing interactive approval flow for dangerous bash commands that do **not** target blacklisted paths.
 
-### 1. Update bash path extraction logic
-**File:** `safety-guard/security.ts`
+## Final Implementation Plan
 
-Planned changes:
-- Extend `extractPathsFromCommand()` so that it can treat eligible bare filename/path tokens as filesystem candidates.
-- Resolve detected bare tokens against the effective `cwd`, the same way explicit relative paths are resolved.
-- Keep the current existing handling for:
-  - tilde paths
-  - absolute paths
-  - explicit relative paths
-  - quote stripping
-  - option skipping
-  - command-name token skipping
-  - trailing redirect/operator stripping
-- Introduce conservative rules for bare-token detection to reduce false positives. The detection should only consider tokens that look like probable local file references rather than arbitrary shell words.
-
-Suggested acceptance-oriented behavior to implement:
-- Detect likely file/path tokens such as:
-  - `.env`
-  - `.env.local`
-  - `config.json`
-  - `secrets.txt`
-  - `dir/file.txt`
-- Continue ignoring obvious non-path shell syntax and control words where possible.
-
-### 2. Keep false positives under control
-**File:** `safety-guard/security.ts`
+### 1. Change runtime behavior for blacklisted `bash` path access
+**File:** `safety-guard/handlers.ts`
 
 Planned changes:
-- Add a small helper or inline predicate that defines when a bare token is path-like enough to be treated as a candidate.
-- Make the heuristic intentionally conservative so that common command arguments are not broadly misclassified as paths.
-- Ensure shell operators, flags, and skipped command tokens still do not become path candidates.
-- Ensure tokens already handled by existing explicit-path rules are not double-processed.
+- Update the `handleBashTools()` branch that handles `findBlacklistedPathInCommand(...)` matches.
+- Remove the interactive confirmation path for blacklisted bash path access.
+- Make blacklisted bash path access return a block result immediately in both:
+  - interactive mode
+  - non-interactive mode
+- Preserve the existing blacklisted-path detection logic itself; only the decision outcome changes.
+- Preserve the existing dangerous-command flow for commands that are dangerous but do not target a blacklisted path.
 
-### 3. Preserve blacklist-first enforcement behavior
-**File:** `safety-guard/security.ts`
+Expected behavior after change:
+- `cat ~/.ssh/id_rsa` → blocked immediately
+- `cat .env` (when resolved into project blacklist scope) → blocked immediately
+- `helm uninstall rel` → still requires interactive confirmation when UI is available
+
+### 2. Change runtime behavior for blacklisted file I/O paths
+**File:** `safety-guard/handlers.ts`
 
 Planned changes:
-- Keep `findBlacklistedPathInCommand()` behavior unchanged at the decision level: it should still return the first offending extracted path.
-- Do not change the approval/blocking flow in `safety-guard/handlers.ts` for this task.
-- Only the extraction coverage should expand.
+- Update the `handleFileIOTools()` `securityLevel === "BLOCK"` branch.
+- Remove the interactive confirmation path for blacklisted file I/O access.
+- Make `read`, `write`, and `edit` return a block result immediately whenever the resolved path matches `BLACKLIST`, regardless of UI availability.
+- Keep the existing behavior unchanged for:
+  - whitelisted paths → auto-allow
+  - non-whitelisted, non-blacklisted paths → interactive consent in UI / block in headless mode
+  - path traversal detection
+  - missing input no-op behavior
 
-### 4. Align requirements documentation with the new behavior
+Expected behavior after change:
+- `read ~/.ssh/config` → blocked immediately
+- `write .env` inside project tree → blocked immediately
+- `edit /tmp/file.txt` → still consent-based, not auto-blocked, because it is not blacklisted by default
+
+### 3. Keep blacklist-first precedence intact and make it explicit in behavior
+**Files:** `safety-guard/handlers.ts`, `REQUIREMENTS.md`
+
+Planned changes:
+- Ensure plan execution does not weaken the existing precedence rule where blacklist wins over whitelist.
+- Document that the blacklist decision is now a strict block rather than a confirmation-gated block.
+- Keep the rest of the priority model intact:
+  1. `BLACKLIST` → strict block
+  2. `WHITELIST` → allow
+  3. default → consent required / block in non-interactive mode
+
+### 4. Update requirements documentation to match task 11 behavior
 **File:** `REQUIREMENTS.md`
 
 Planned changes:
-- Update section **9. Bash Path Extraction Rules** so it no longer states that bare words are intentionally ignored.
-- Replace that description with the new expected runtime behavior:
-  - explicit path forms are still extracted
-  - path-like bare filenames and relative subpaths are also extracted and resolved against `cwd`
-  - detection remains heuristic/conservative to reduce false positives
-- Update section **14. Known Gaps / Current Limitations** to remove or revise the statement that bash path extraction ignores bare filenames.
+- Update section **3. Security Decision Model** so `BLACKLIST` no longer says:
+  - interactive mode: requires explicit user confirmation
+- Replace it with strict blocking semantics for all modes.
+- Update section **10.4. Decision behavior for file I/O** so blacklist behavior is described as immediate block rather than confirmable.
+- Update section **12.3. Non-interactive behavior** only as needed to keep wording accurate after blacklist becomes always-blocked.
+- Update section **12.4. Logging behavior** so it reflects blocked blacklisted-path access rather than user rejection for that class of events.
+- Update section **11.4. Prompt-policy mismatch currently present** only if task 11 materially reduces or removes the mismatch being described.
+- Keep dangerous-command behavior documented as confirmable in interactive mode when no blacklisted path is involved.
 
-### 5. Update test cases to reflect the new expected behavior
+### 5. Update test cases to reflect strict blacklist enforcement
 **File:** `TEST-CASES.md`
 
 Planned changes:
-- Replace the current gap-verification expectation that bare filenames are ignored.
-- Update bash path extraction coverage with positive cases for bare filename detection, especially for sensitive project files.
+- Revise all blacklisted-path test expectations for `read`, `write`, `edit`, and `bash` so they expect immediate blocking rather than approve/reject behavior.
+- Keep consent-based expectations unchanged for non-blacklisted paths.
+- Keep dangerous-command interactive approval tests unchanged for commands such as `helm uninstall rel`.
+- Update logging/notification expectations that currently depend on user rejection of blacklisted-path confirmations.
 
-Specific test-case updates to make:
-- Revise **TC-BASH-PATH-09** so it expects a bare filename/path token to be treated as a path candidate instead of ignored.
-- Add or adjust cases covering:
-  - `cat .env` resolving to `<cwd>/.env` and being treated as blacklisted
-  - `cat .env.local` resolving to `<cwd>/.env.local` and being treated as blacklisted
-  - `cat dir/.env` resolving relative to `cwd` and being treated as blacklisted when applicable
-  - a benign non-path token scenario to verify the heuristic stays conservative
-- Update **Known Gap Verification** section to remove the statement that bare filenames are not detected, if that statement still exists after test edits.
+Specific test areas to update:
+- section **4. Hardcoded Path Security Coverage**
+- section **5. File I/O Protection - `read`**
+- section **6. File I/O Protection - `write`**
+- section **7. File I/O Protection - `edit`**
+- section **8. Bash Path Extraction and Blacklisted Path Detection**
+- section **10. Non-Interactive Logging and Sensitive Output Behavior**
+- section **11. Notifications** where blacklist rejection wording is no longer valid
+- section **12. Known Gap Verification** only if any statement becomes outdated after task 11
 
-### 6. Validate changed behavior
-**Validation scope:** changed code only
+### 6. Keep notifications and prompts scoped to remaining consent-based flows
+**Files:** `safety-guard/handlers.ts`, `TEST-CASES.md`, `REQUIREMENTS.md`
+
+Planned changes:
+- Ensure prompt/notification behavior remains only where user choice still exists:
+  - dangerous bash commands
+  - non-whitelisted, non-blacklisted file I/O paths
+- Remove blacklisted-path confirmation expectations from docs/tests because there will no longer be a user decision branch for those cases.
+- Avoid introducing new notification semantics unless strictly necessary for task 11.
+
+### 7. Validate behavior after implementation
+**Validation scope:** changed files and affected behavior only
 
 Planned checks:
-- Run repository lint/check command(s) applicable to the project after implementation.
-- Verify that bash path extraction still catches previously supported forms:
-  - `~/.ssh/id_rsa`
-  - `/etc/passwd`
-  - `./.env`
-- Verify that newly supported bare forms are caught:
-  - `.env`
-  - `.env.local`
-  - `subdir/.env`
-- Verify that obviously non-path arguments are not over-detected.
+- Run the repository validation/lint command that applies to this project, if available.
+- Verify blacklisted paths are blocked in both interactive and non-interactive contexts for:
+  - `bash`
+  - `read`
+  - `write`
+  - `edit`
+- Verify non-blacklisted dangerous bash commands still require confirmation in interactive mode and remain blocked in non-interactive mode.
+- Verify whitelisted and consent-required non-blacklisted file I/O behavior remains unchanged.
+
+---
 
 ## File Change Summary
-- `safety-guard/security.ts` — extend bash path extraction for bare path-like tokens
-- `REQUIREMENTS.md` — align documented behavior with new extraction rules
-- `TEST-CASES.md` — update/add test cases for bare filename detection
+- `safety-guard/handlers.ts` — remove interactive override behavior for all blacklist matches while preserving dangerous-command approval flow for non-blacklisted commands
+- `REQUIREMENTS.md` — align decision model, file I/O semantics, and logging/interaction wording with strict blacklist blocking
+- `TEST-CASES.md` — update expectations from confirmable blacklist access to immediate blocking
 
 ## Acceptance Criteria
-- Bash path extraction detects eligible bare file/path tokens used in `bash` commands and resolves them against the effective `cwd`.
-- Sensitive project files referenced as bare tokens are caught by blacklist checks, including at minimum:
-  - `.env`
-  - `.env.local`
-  - nested relative forms such as `dir/.env`
-- Previously supported extracted path forms continue to work unchanged:
-  - `~/...`
-  - `/...`
-  - `./...`
-  - `../...`
-- The decision flow for dangerous commands and file I/O tools remains unchanged.
-- `REQUIREMENTS.md` no longer documents bare filenames as intentionally ignored.
-- `TEST-CASES.md` includes positive coverage for bare filename detection and no longer asserts that such tokens are ignored.
-- Repository lint/checks relevant to the changed code pass.
+- Any monitored operation targeting a blacklisted path is blocked immediately, regardless of whether UI is available.
+- This strict blocking applies consistently to:
+  - blacklisted path access detected in `bash`
+  - `read`
+  - `write`
+  - `edit`
+- Dangerous bash commands that do **not** target blacklisted paths still follow the existing confirmation model in interactive mode and block in non-interactive mode.
+- Whitelisted file I/O behavior remains auto-allow.
+- Non-whitelisted, non-blacklisted file I/O behavior remains consent-based in interactive mode and blocked in non-interactive mode.
+- `REQUIREMENTS.md` is updated so the documented decision model matches the planned runtime behavior.
+- `TEST-CASES.md` is updated so blacklist-related test expectations no longer rely on interactive approval.
+- The plan preserves blacklist-first precedence over whitelist decisions.
 
 ## Don't Do
-- Do not treat every non-option bash token as a filesystem path candidate.
-- Do not refactor unrelated bash sanitization or dangerous-command pattern logic.
-- Do not change interactive approval semantics for blacklisted paths or dangerous commands as part of task 5.
-- Do not expand scope to unmonitored tools.
-- Do not add redirect/pipe destination handling unless it is strictly necessary for bare filename detection in this task.
+- Do not change blacklist matching rules or path extraction scope for this task.
+- Do not refactor unrelated dangerous-command regexes.
+- Do not expand monitoring to unmonitored tools.
+- Do not add new approval logic for blacklisted paths in any tool flow.
+- Do not broaden this task into redirect/pipe parsing changes from task 12.
+- Do not make unrelated logging redesign changes from task 10.
+- Do not alter consent behavior for non-blacklisted file I/O beyond what is required to keep current semantics intact.
+- Do not change dangerous bash approval semantics unless a blacklisted path is involved.
 
 ## Out of Scope
-To keep this task narrowly aligned with task 5, the plan does **not** include:
-- changing interactive override behavior for blacklisted paths
-- refactoring dangerous command detection
-- adding support for redirect/pipe destination parsing beyond current extraction scope
-- expanding monitoring to unmonitored tools
+- auditing or adding monitoring for unmonitored/custom tools
+- bash sanitization redesign
+- redirect/pipe destination detection improvements
+- broader logging enhancements beyond what is required to keep task 11 behavior accurately documented and testable
+- unrelated prompt-policy refactors outside the direct effect of strict blacklist enforcement
 
 ## Notes / Risk
-Main implementation risk is false positives in bash parsing. The solution should therefore prefer a conservative bare-token heuristic rather than treating every non-option token as a path.
+Main risk is changing only part of the blacklist decision flow and leaving inconsistent behavior between tools. The implementation should therefore update all monitored blacklist branches together and then align documentation/tests in the same task.
