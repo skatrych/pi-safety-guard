@@ -6,7 +6,7 @@
 - [x] 2: Add ~/.kube/ to hardcoded blacklist to match prompt policy
 - [x] 3: Fix project-specific blacklist accumulation across sessions
 - [x] 4: Implement tilde expansion for 'read' and 'write' tool paths
-- [ ] 5: Improve bash path extraction to detect bare filenames
+- [x] 5: Improve bash path extraction to detect bare filenames
 - [ ] 6: Align prompt policy with runtime reality regarding bypassability
 - [ ] 7: Audit and add monitoring for other custom/future tools
 - [ ] 8: Ensure consistent resolution of tilde-expanded paths in all tools
