@@ -140,7 +140,7 @@
 ## 4. Hardcoded Path Security Coverage
 
 ### TC-PATH-01: Home-Level Secret Files and Directories
-- **Context:** Interactive session.
+- **Context:** Any session (interactive or non-interactive).
 - **Action:** Trigger `read` for each representative absolute home-based path:
   - `<HOME>/.pi/agent/auth.json`
   - `<HOME>/.ssh/id_rsa`
@@ -152,12 +152,12 @@
   - `<HOME>/.env`
   - `<HOME>/.env.local`
   - `<HOME>/.gitconfig`
-- **Expected:** Each path is treated as blacklisted and requires confirmation in interactive mode.
+- **Expected:** Each path is treated as blacklisted and blocked immediately, regardless of mode. No confirmation prompt is shown.
 
 ### TC-PATH-02: System Paths
-- **Context:** Interactive session.
+- **Context:** Any session (interactive or non-interactive).
 - **Action:** Trigger `read` for representative paths under `/etc/`, `/usr/`, and `/System/`.
-- **Expected:** Each path is treated as blacklisted and requires confirmation.
+- **Expected:** Each path is treated as blacklisted and blocked immediately. No confirmation prompt is shown.
 
 ### TC-PATH-03: Base Whitelist Paths
 - **Context:** Session initialized.
@@ -169,7 +169,7 @@
 ### TC-PATH-04: Blacklist Overrides Whitelist for File I/O
 - **Context:** User has configured `~/.ssh` inside `extensions.allowedPaths`.
 - **Action:** Trigger `read <HOME>/.ssh/config`.
-- **Expected:** Blacklist still wins; confirmation is required.
+- **Expected:** Blacklist still wins; operation is blocked immediately with no confirmation prompt.
 
 ---
 
@@ -180,20 +180,15 @@
 - **Action:** Trigger `read { path: "src/index.ts" }`.
 - **Expected:** Resolved path is inside project whitelist; access is allowed automatically.
 
-### TC-READ-02: Blacklisted Read Interactive Approve/Reject
-- **Context:** Interactive session.
+### TC-READ-02: Blacklisted Read Strict Block
+- **Context:** Any session (interactive or non-interactive).
 - **Action:** Trigger `read { path: "<HOME>/.ssh/config" }`.
-- **Expected:** Confirmation prompt shown; rejection blocks, approval allows.
+- **Expected:** Blocked immediately; no confirmation prompt is shown regardless of mode.
 
 ### TC-READ-03: Consent-Required Read Interactive Approve/Reject
 - **Context:** Interactive session.
 - **Action:** Trigger `read { path: "/tmp/report.txt" }`.
 - **Expected:** Consent prompt shown; rejection blocks, approval allows.
-
-### TC-READ-04: Blacklisted Read Non-Interactive
-- **Context:** `ctx.hasUI = false`.
-- **Action:** Trigger `read { path: "<HOME>/.ssh/config" }`.
-- **Expected:** Operation is blocked.
 
 ### TC-READ-05: Consent-Required Read Non-Interactive
 - **Context:** `ctx.hasUI = false`.
@@ -218,9 +213,9 @@
 - **Expected:** Not blocked by traversal detection alone; proceeds to normal whitelist/blacklist/consent logic.
 
 ### TC-READ-09: Home `.env` Variant Protection
-- **Context:** Interactive session.
+- **Context:** Any session (interactive or non-interactive).
 - **Action:** Trigger `read { path: "<HOME>/.env.local" }`.
-- **Expected:** Blacklisted; confirmation required.
+- **Expected:** Blacklisted; blocked immediately with no confirmation prompt.
 
 ### TC-READ-10: Project `.env` Variant Protection Matrix
 - **Context:** Session initialized with cwd `/prj/app`.
@@ -229,7 +224,7 @@
   - `.env.local`
   - `packages/api/.env`
   - `apps/web/.env.production`
-- **Expected:** Each path is treated as blacklisted by project-specific runtime rules.
+- **Expected:** Each path is treated as blacklisted by project-specific runtime rules and blocked immediately.
 
 ---
 
@@ -240,20 +235,15 @@
 - **Action:** Trigger `write { path: "out/report.txt" }`.
 - **Expected:** Allowed automatically.
 
-### TC-WRITE-02: Blacklisted Write Interactive Approve/Reject
-- **Context:** Interactive session.
+### TC-WRITE-02: Blacklisted Write Strict Block
+- **Context:** Any session (interactive or non-interactive).
 - **Action:** Trigger `write { path: "<HOME>/.ssh/config" }`.
-- **Expected:** Confirmation prompt shown; rejection blocks, approval allows.
+- **Expected:** Blocked immediately; no confirmation prompt is shown regardless of mode.
 
 ### TC-WRITE-03: Consent-Required Write Interactive Approve/Reject
 - **Context:** Interactive session.
 - **Action:** Trigger `write { path: "/tmp/output.txt" }`.
 - **Expected:** Consent prompt shown; rejection blocks, approval allows.
-
-### TC-WRITE-04: Blacklisted Write Non-Interactive
-- **Context:** `ctx.hasUI = false`.
-- **Action:** Trigger `write { path: "<HOME>/.aws/credentials" }`.
-- **Expected:** Operation is blocked.
 
 ### TC-WRITE-05: Consent-Required Write Non-Interactive
 - **Context:** `ctx.hasUI = false`.
@@ -279,20 +269,15 @@
 - **Action:** Trigger `edit { path: "src/index.ts", edits: [...] }`.
 - **Expected:** Resolved path is inside project whitelist; access is allowed automatically.
 
-### TC-EDIT-02: Blacklisted Edit Interactive Approve/Reject
-- **Context:** Interactive session.
+### TC-EDIT-02: Blacklisted Edit Strict Block
+- **Context:** Any session (interactive or non-interactive).
 - **Action:** Trigger `edit { path: "<HOME>/.ssh/config", edits: [...] }`.
-- **Expected:** Confirmation prompt shown; rejection blocks, approval allows.
+- **Expected:** Blocked immediately; no confirmation prompt is shown regardless of mode.
 
 ### TC-EDIT-03: Consent-Required Edit Interactive Approve/Reject
 - **Context:** Interactive session.
 - **Action:** Trigger `edit { path: "/tmp/report.txt", edits: [...] }`.
 - **Expected:** Consent prompt shown; rejection blocks, approval allows.
-
-### TC-EDIT-04: Blacklisted Edit Non-Interactive
-- **Context:** `ctx.hasUI = false`.
-- **Action:** Trigger `edit { path: "<HOME>/.ssh/config", edits: [...] }`.
-- **Expected:** Operation is blocked.
 
 ### TC-EDIT-05: Consent-Required Edit Non-Interactive
 - **Context:** `ctx.hasUI = false`.
@@ -310,9 +295,9 @@
 - **Expected:** Blocked with reason `"Path traversal detected"`.
 
 ### TC-EDIT-08: Edit Home `.env` Variant Protection
-- **Context:** Interactive session.
+- **Context:** Any session (interactive or non-interactive).
 - **Action:** Trigger `edit { path: "<HOME>/.env.local", edits: [...] }`.
-- **Expected:** Blacklisted; confirmation required.
+- **Expected:** Blacklisted; blocked immediately with no confirmation prompt.
 
 ### TC-EDIT-09: Edit Project `.env` Variant Protection Matrix
 - **Context:** Session initialized with cwd `/prj/app`.
@@ -320,7 +305,7 @@
   - `.env`
   - `.env.local`
   - `packages/api/.env`
-- **Expected:** Each path is treated as blacklisted by project-specific runtime rules.
+- **Expected:** Each path is treated as blacklisted by project-specific runtime rules and blocked immediately.
 
 ### TC-EDIT-10: Missing Edit Path Input
 - **Context:** `edit` tool call lacks `path`.
@@ -342,64 +327,64 @@
 ## 8. Bash Path Extraction and Blacklisted Path Detection
 
 ### TC-BASH-PATH-01: Tilde Path Detection
-- **Context:** Interactive session.
+- **Context:** Any session (interactive or non-interactive).
 - **Action:** Execute `bash` command `cat ~/.ssh/id_rsa`.
-- **Expected:** Path is extracted and treated as blacklisted.
+- **Expected:** Path is extracted, treated as blacklisted, and command is blocked immediately.
 
 ### TC-BASH-PATH-02: Absolute Path Detection
-- **Context:** Interactive session.
+- **Context:** Any session (interactive or non-interactive).
 - **Action:** Execute `bash` command `ls -la /etc/passwd`.
-- **Expected:** Path is extracted and treated as blacklisted.
+- **Expected:** Path is extracted, treated as blacklisted, and command is blocked immediately.
 
 ### TC-BASH-PATH-03: Explicit Relative Path Detection
 - **Context:** Session initialized with cwd `/prj/app` and project `.env` blacklist active.
 - **Action:** Execute `bash` command `cat ./.env`.
-- **Expected:** Relative path resolves into cwd and is treated as blacklisted.
+- **Expected:** Relative path resolves into cwd, is treated as blacklisted, and command is blocked immediately.
 
 ### TC-BASH-PATH-04: Double-Quoted Path Detection
-- **Context:** Interactive session.
+- **Context:** Any session (interactive or non-interactive).
 - **Action:** Execute `bash` command `cat "~/.aws/credentials"`.
-- **Expected:** Quotes are stripped, path is extracted, blacklist check triggers.
+- **Expected:** Quotes are stripped, path is extracted, blacklist match triggers, and command is blocked immediately.
 
 ### TC-BASH-PATH-05: Single-Quoted Path Detection
-- **Context:** Interactive session.
+- **Context:** Any session (interactive or non-interactive).
 - **Action:** Execute `bash` command `stat '~/.gitconfig'`.
-- **Expected:** Quotes are stripped, path is extracted, blacklist check triggers.
+- **Expected:** Quotes are stripped, path is extracted, blacklist match triggers, and command is blocked immediately.
 
 ### TC-BASH-PATH-06: Trailing Redirect Stripping
-- **Context:** Interactive session.
+- **Context:** Any session (interactive or non-interactive).
 - **Action:** Execute `bash` command `cat ~/.ssh/config>`.
-- **Expected:** Redirect fragment is stripped from candidate path before blacklist check.
+- **Expected:** Redirect fragment is stripped from candidate path before blacklist check; command is blocked immediately.
 
 ### TC-BASH-PATH-07: Flags Are Ignored in Parsing
-- **Context:** Interactive session.
+- **Context:** Any session (interactive or non-interactive).
 - **Action:** Execute `bash` command `ls -la ~/.ssh/`.
-- **Expected:** `-la` is ignored as a path candidate; `~/.ssh/` is extracted and checked.
+- **Expected:** `-la` is ignored as a path candidate; `~/.ssh/` is extracted, treated as blacklisted, and command is blocked immediately.
 
 ### TC-BASH-PATH-08: Command Token Skip List Behavior
-- **Context:** Interactive session.
+- **Context:** Any session (interactive or non-interactive).
 - **Action:** Execute `bash` command `cat ~/.ssh/config`.
-- **Expected:** `cat` is skipped as command token; path token is still extracted.
+- **Expected:** `cat` is skipped as command token; path token is extracted, treated as blacklisted, and command is blocked immediately.
 
 ### TC-BASH-PATH-09: Bare Filename Detection (`.env`)
 - **Context:** Session initialized with cwd `/prj/app` and project `.env` blacklist active.
 - **Action:** Execute `bash` command `cat .env`.
-- **Expected:** Bare token `.env` is treated as a path candidate, resolves to `/prj/app/.env`, and is treated as blacklisted.
+- **Expected:** Bare token `.env` is treated as a path candidate, resolves to `/prj/app/.env`, treated as blacklisted, and command is blocked immediately.
 
 ### TC-BASH-PATH-10: Blacklist Overrides Whitelist for Bash Path Access
 - **Context:** User configured `~/.ssh` in `extensions.allowedPaths`.
 - **Action:** Execute `bash` command `cat ~/.ssh/id_rsa`.
-- **Expected:** Path is still treated as blacklisted.
+- **Expected:** Path is still treated as blacklisted and command is blocked immediately.
 
 ### TC-BASH-PATH-11: Bare Filename Detection (`.env.local`)
 - **Context:** Session initialized with cwd `/prj/app` and project `.env` blacklist active.
 - **Action:** Execute `bash` command `cat .env.local`.
-- **Expected:** Bare token `.env.local` is treated as a path candidate, resolves to `/prj/app/.env.local`, and is treated as blacklisted.
+- **Expected:** Bare token `.env.local` is treated as a path candidate, resolves to `/prj/app/.env.local`, treated as blacklisted, and command is blocked immediately.
 
 ### TC-BASH-PATH-12: Bare Relative Subpath Detection
 - **Context:** Session initialized with cwd `/prj/app` and project `.env` blacklist active.
 - **Action:** Execute `bash` command `cat packages/api/.env`.
-- **Expected:** Bare subpath token is treated as a path candidate, resolves to `/prj/app/packages/api/.env`, and is treated as blacklisted.
+- **Expected:** Bare subpath token is treated as a path candidate, resolves to `/prj/app/packages/api/.env`, treated as blacklisted, and command is blocked immediately.
 
 ### TC-BASH-PATH-13: Conservative Bare-Token Filtering
 - **Context:** Interactive session.
@@ -470,17 +455,22 @@
 - **Action:** Execute `bash` command `helm uninstall rel`.
 - **Expected:** Confirmation shown; rejection blocks and approval allows.
 
-### TC-BASH-DANGER-08: Command Sanitization Against Hidden Characters
+### TC-BASH-DANGER-08: Dangerous Command Targeting Blacklisted Path
+- **Context:** Any session (interactive or non-interactive).
+- **Action:** Execute `bash` command `rm -rf ~/.ssh/`.
+- **Expected:** The operation is blocked, no confirmation prompt appears, and the block reason identifies the blacklisted path.
+
+### TC-BASH-DANGER-09: Command Sanitization Against Hidden Characters
 - **Context:** Zero-width or control characters inserted to obfuscate command.
-- **Action:** Execute `bash` command `rm\u200B -rf /tmp/x`.
+- **Action:** Execute `bash` command `rm\u200B -rf /tmp/x` (targets non-blacklisted path).
 - **Expected:** Command is sanitized and still detected as dangerous.
 
 ---
 
 ## 10. Non-Interactive Logging and Sensitive Output Behavior
 
-### TC-LOG-01: Non-Interactive Blacklisted Bash Path Logging
-- **Context:** `ctx.hasUI = false`.
+### TC-LOG-01: Blacklisted Bash Path Logging
+- **Context:** Any session (interactive or non-interactive).
 - **Action:** Execute `bash` command `cat ~/.ssh/id_rsa`.
 - **Expected:** Block occurs and log contains offending path rather than full command.
 
@@ -498,14 +488,14 @@
 
 ## 11. Notifications
 
-### TC-NOTIFY-01: Notifications Enabled on User Rejection
+### TC-NOTIFY-01: Notifications Enabled on User Rejection of Dangerous Command
 - **Context:** `extensions.notificationsEnabled = true`, interactive session.
-- **Action:** Reject a dangerous or protected-path confirmation prompt.
-- **Expected:** `ctx.ui.notify` is called in branches where rejection notifications are implemented.
+- **Action:** Reject a dangerous bash command confirmation prompt (e.g., `helm uninstall rel`).
+- **Expected:** `ctx.ui.notify` is called. Note: blacklisted-path operations are blocked immediately without a user prompt and do not produce rejection notifications.
 
-### TC-NOTIFY-02: Notifications Disabled on User Rejection
+### TC-NOTIFY-02: Notifications Disabled on User Rejection of Dangerous Command
 - **Context:** `extensions.notificationsEnabled = false`, interactive session.
-- **Action:** Reject a dangerous or protected-path confirmation prompt.
+- **Action:** Reject a dangerous bash command confirmation prompt.
 - **Expected:** `ctx.ui.notify` is not called.
 
 ---
@@ -520,9 +510,9 @@
 ### TC-GAP-02: File I/O Tilde Paths Are Correctly Expanded and Protected
 - **Context:** `read`, `write`, or `edit` receives a path beginning with `~`.
 - **Action:** Trigger `read { path: "~/.ssh/config" }`.
-- **Expected:** `~` is expanded to the home directory before resolution and security checks; resulting path is treated as blacklisted.
+- **Expected:** `~` is expanded to the home directory before resolution and security checks; the resolved path matches the blacklist and the operation is blocked immediately with no confirmation prompt.
 
-### TC-GAP-03: Prompt Policy Is Stricter Than Runtime Enforcement
+### TC-GAP-03: Partial Prompt Policy Alignment
 - **Context:** Prompt policy claims restricted operations are enforced and cannot be bypassed.
-- **Action:** In interactive mode, trigger a blacklisted path access or dangerous bash command and approve the confirmation dialog.
-- **Expected:** Operation is allowed after user approval, demonstrating that runtime enforcement is weaker than the prompt wording.
+- **Action:** In interactive mode, trigger a dangerous bash command that does not target a blacklisted path (e.g., `helm uninstall rel`) and approve the confirmation dialog.
+- **Expected:** Operation is allowed after user approval, demonstrating that dangerous commands without blacklisted paths can still be approved in interactive mode. Note: blacklisted path access is now fully enforced and cannot be bypassed via confirmation.

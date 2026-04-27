@@ -22,13 +22,13 @@ This is an important current limitation and security boundary.
 The extension applies a strict priority model:
 
 1. **BLACKLIST** — highest priority
-   - Interactive mode: requires explicit user confirmation.
-   - Non-interactive mode: blocked.
+   - Always blocked immediately, regardless of whether UI is available.
+   - No user override is possible.
 2. **WHITELIST** — lower priority than blacklist
    - Automatically allowed.
+   - Applies to file I/O tools (`read`, `write`, `edit`) only. Bash commands are not checked against the whitelist.
 3. **DEFAULT / CONSENT REQUIRED**
-   - Interactive mode: requires explicit user confirmation.
-   - Non-interactive mode: blocked.
+   - Requires explicit user confirmation to proceed. Blocked if confirmation cannot be obtained.
 
 ### 3.1. Precedence rule
 If a path matches both blacklist and whitelist logic, **blacklist wins**.
@@ -207,13 +207,15 @@ The extension detects representative destructive or risky command families inclu
   - `git clean -fd`
   - `git branch -D`
 
-### 8.3. Dangerous bash decision behavior
-If a dangerous bash pattern is detected:
-- interactive mode: user confirmation is required
-- non-interactive mode: operation is blocked
+### 8.3. Bash evaluation order
+For bash commands, the extension evaluates in this fixed order:
+1. **Blacklist path detection** — if any extracted path argument matches the blacklist, the command is blocked immediately, regardless of whether the command is also dangerous. No user override is possible.
+2. **Dangerous pattern detection** — only reached if no blacklisted path was found. If a dangerous pattern is detected, user confirmation is required to proceed. Blocked if confirmation cannot be obtained.
+
+The whitelist is intentionally not consulted for bash commands. Any bash command that passes both checks above is allowed to proceed regardless of whether its path arguments are whitelisted.
 
 ### 8.4. Bash path extraction purpose
-For non-destructive but potentially sensitive bash commands, the extension extracts path-like arguments and checks them against blacklist rules to catch read-like access to protected paths.
+The extension extracts path-like arguments from all bash commands and checks them against blacklist rules. This applies to both read-like and destructive commands, ensuring that dangerous commands targeting blacklisted paths are caught at the blacklist check rather than the dangerous-command confirmation flow.
 
 ## 9. Bash Path Extraction Rules
 The bash parser:
@@ -257,13 +259,12 @@ For monitored file I/O tools:
 ### 10.4. Decision behavior for file I/O
 For `read`, `write`, and `edit`:
 - blacklist match:
-  - interactive: confirmation required
-  - non-interactive: blocked
+  - blocked immediately, regardless of mode
+  - no user override is possible
 - whitelist match:
   - allowed automatically
 - neither blacklist nor whitelist:
-  - interactive: confirmation required
-  - non-interactive: blocked
+  - requires user confirmation to proceed; blocked if confirmation cannot be obtained
 
 ### 10.5. Missing input behavior
 If `read`, `write`, or `edit` input does not contain a usable string `path`, the extension returns without intervention.
@@ -286,9 +287,10 @@ The appended policy communicates restrictions around:
 - AWS secrets / KMS / certificate keys
 - Kubernetes secrets
 
-### 11.4. Prompt-policy mismatch currently present
-The prompt policy is stricter than runtime enforcement:
-- the prompt policy states restrictions are enforced and cannot be bypassed, but runtime behavior still allows interactive user override for blacklisted paths and dangerous commands via confirmation dialogs
+### 11.4. Prompt-policy alignment
+Blacklisted path access is strictly enforced at runtime: it is blocked immediately with no user override, matching the prompt policy claim that these restrictions cannot be bypassed.
+
+A narrower mismatch remains for dangerous bash commands that do not target a blacklisted path: the prompt policy implies all dangerous operations are fully enforced, but the runtime still allows interactive user approval for such commands in interactive mode.
 
 ## 12. User Interaction, Notifications, and Logging
 
@@ -299,7 +301,7 @@ All confirmation prompts are awaited before allowing execution to proceed.
 Notifications are shown only in user-rejection branches where notification logic is implemented, and only if `notificationsEnabled` is `true`.
 
 ### 12.3. Non-interactive behavior
-In headless mode, operations requiring confirmation are blocked rather than silently allowed.
+Operations that require user confirmation are blocked when confirmation cannot be obtained (e.g., no UI available).
 
 ### 12.4. Logging behavior
 Observable logging includes, at minimum:
@@ -307,13 +309,13 @@ Observable logging includes, at minimum:
 - config load failure
 - blocked dangerous commands in non-interactive mode
 - user rejection of dangerous commands
-- user rejection of blacklisted-path access
+- blocked blacklisted-path access (all modes)
 - automatic allow of whitelisted file paths
 - project directory addition to whitelist
 - project `.env` blacklist setup
 
 ### 12.5. Sensitive logging nuance
-For non-interactive bash access to a blacklisted path, logging records the offending path rather than the full command to reduce leakage risk.
+For bash access to a blacklisted path, logging records the offending path rather than the full command to reduce leakage risk.
 
 ## 13. Graceful No-Op Cases
 The extension returns without intervention when:
@@ -326,5 +328,5 @@ The extension returns without intervention when:
 ## 14. Known Gaps / Current Limitations
 Current implementation limitations that should be preserved or intentionally addressed in refactoring:
 - unmonitored tools are not protected
-- prompt policy is stricter than runtime enforcement because interactive confirmation can still allow blacklisted paths and dangerous commands
+- prompt policy is partially stricter than runtime enforcement: dangerous bash commands that do not target a blacklisted path can still be approved by the user in interactive mode
 - bash path extraction is heuristic and may miss complex shell-expanded references

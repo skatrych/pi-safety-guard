@@ -35,7 +35,19 @@ export const handleBashTools = async (
 	const command = sanitizeCommand(input.command);
 	const effectiveCwd = ctx.cwd || process.cwd();
 
-	// ── Pass 1: Destructive pattern check ────────────────────────────────────
+	// ── Pass 1: Blacklisted path detection — unconditional block ─────────────
+	const offendingPath = findBlacklistedPathInCommand(command, effectiveCwd);
+	if (offendingPath !== null) {
+		console.log(
+			`[safety-guard] BLOCKED bash access to blacklisted path: ${offendingPath}`
+		);
+		return {
+			block: true,
+			reason: `Bash command targets blacklisted path: ${offendingPath}`,
+		};
+	}
+
+	// ── Pass 2: Destructive pattern check ────────────────────────────────────
 	const isDangerous = dangerousBashPatterns.some((p) => p.test(command));
 	if (isDangerous) {
 		if (ctx.hasUI !== true) {
@@ -52,32 +64,6 @@ export const handleBashTools = async (
 			if (state.notificationsEnabled) ctx.ui.notify("Blocked: " + command, "warning");
 			console.log(`[safety-guard] User rejected dangerous command: ${command}`);
 			return { block: true, reason: "User rejected dangerous command" };
-		}
-		return undefined; // User approved
-	}
-
-	// ── Pass 2: Blacklisted path detection in bash command ───────────────────
-	const offendingPath = findBlacklistedPathInCommand(command, effectiveCwd);
-	if (offendingPath !== null) {
-		if (ctx.hasUI !== true) {
-			console.log(
-				`[safety-guard] BLOCKED bash access to blacklisted path (non-interactive): ${offendingPath}`
-			);
-			return {
-				block: true,
-				reason: `Bash command targets blacklisted path: ${offendingPath}`,
-			};
-		}
-
-		// Await the dialog — tool call is suspended until user responds.
-		const confirmed = await ctx.ui.confirm(
-			`⚠️ Bash command targets a blacklisted path:\n\n          "${offendingPath}"\n\nThis path contains credentials or confidential data. Proceed?`,
-			"Path is on blacklist for credential protection"
-		);
-		if (!confirmed) {
-			if (state.notificationsEnabled) ctx.ui.notify("Blocked: access to " + offendingPath, "warning");
-			console.log(`[safety-guard] User rejected bash access to blacklisted path: ${offendingPath}`);
-			return { block: true, reason: `User rejected bash access to blacklisted path: ${offendingPath}` };
 		}
 		return undefined; // User approved
 	}
@@ -113,29 +99,15 @@ export const handleFileIOTools = async (
 	const resolvedPath = resolve(effectiveCwd, expandedPathParam);
 	const securityLevel = checkPathSecurity(resolvedPath);
 
-	// HIGHEST PRIORITY: BLACKLIST
+	// HIGHEST PRIORITY: BLACKLIST — strict block, no user override
 	if (securityLevel === "BLOCK") {
-		if (ctx.hasUI !== true) {
-			console.log(
-				`[safety-guard] BLOCKED ${toolName} on blacklisted path (non-interactive): ${resolvedPath}`
-			);
-			return {
-				block: true,
-				reason: "Blacklisted path blocked (credentials/confidential)",
-			};
-		}
-
-		// Await the dialog — tool call is suspended until user responds.
-		const confirmed = await ctx.ui.confirm(
-			`⚠️ Blacklisted path detected (BLACKLIST priority):\n\n          "${pathParam}"\n\nThis is a blocked credentials/confidential directory. Proceed?`,
-			"Path is on blacklist for credential protection"
+		console.log(
+			`[safety-guard] BLOCKED ${toolName} on blacklisted path: ${resolvedPath}`
 		);
-		if (!confirmed) {
-			if (state.notificationsEnabled) ctx.ui.notify("Blocked: " + pathParam, "warning");
-			console.log(`[safety-guard] User rejected blacklisted path: ${resolvedPath}`);
-			return { block: true, reason: "User rejected blacklisted path" };
-		}
-		return undefined; // User approved
+		return {
+			block: true,
+			reason: "Blacklisted path blocked (credentials/confidential)",
+		};
 	}
 
 	// WHITELIST: Allow automatically
