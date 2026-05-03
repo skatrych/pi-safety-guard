@@ -143,6 +143,15 @@ export const handleFileIOTools = async (
 		return undefined;
 	}
 
+	// FALLBACK: Allow any path under the current project directory.
+	// Guards against the case where ctx.cwd was not yet available at session_start,
+	// causing the whitelist to be built with process.cwd() instead of the project dir.
+	const cwdNormalized = effectiveCwd.endsWith("/") ? effectiveCwd : effectiveCwd + "/";
+	if (resolvedPath.startsWith(cwdNormalized)) {
+		console.log(`[safety-guard] ALLOWED path (project directory): ${resolvedPath}`);
+		return undefined;
+	}
+
 	// DEFAULT: Require consent
 	if (ctx.hasUI !== true) {
 		console.log(
