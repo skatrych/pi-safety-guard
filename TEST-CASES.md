@@ -66,6 +66,11 @@
 - **Action:** Run `session_start` for cwd `/prj/app`, then run `session_start` again for cwd `/prj/other`.
 - **Expected:** Runtime blacklist keeps static built-in entries and exactly one project-specific `.env` pair for the current cwd (`/prj/other`). Entries for `/prj/app` are no longer present.
 
+### TC-INIT-08: Project `node_modules` Blacklist Added
+- **Context:** Session starts with cwd `/prj/app`.
+- **Action:** Run `session_start`.
+- **Expected:** Runtime blacklist gains a pattern that blocks `/prj/app/node_modules` and all descendants.
+
 ---
 
 ## 3. Configuration Loading, Validation, and Fallback
@@ -225,6 +230,13 @@
   - `packages/api/.env`
   - `apps/web/.env.production`
 - **Expected:** Each path is treated as blacklisted by project-specific runtime rules and blocked immediately.
+
+### TC-READ-11: Project `node_modules` Read Block
+- **Context:** Session initialized with cwd `/prj/app`.
+- **Action:** Trigger `read` for:
+  - `node_modules/pkg/index.js`
+  - `./node_modules/pkg/package.json`
+- **Expected:** Each resolves under `/prj/app/node_modules` and is blocked immediately as blacklisted.
 
 ---
 
@@ -390,6 +402,36 @@
 - **Context:** Interactive session.
 - **Action:** Execute `bash` command `echo package-name`.
 - **Expected:** `package-name` is not treated as a path candidate by bash parsing.
+
+### TC-BASH-PATH-14: Recursive Project Root `find` Block Without Exclusion
+- **Context:** Session initialized with cwd `/prj/app`.
+- **Action:** Execute `bash` command `find . -type f`.
+- **Expected:** Blocked with reason requiring explicit `node_modules` exclusion.
+
+### TC-BASH-PATH-15: Recursive Project Root `grep -R` Block Without Exclusion
+- **Context:** Session initialized with cwd `/prj/app`.
+- **Action:** Execute `bash` command `grep -R TODO .`.
+- **Expected:** Blocked with reason requiring explicit `node_modules` exclusion.
+
+### TC-BASH-PATH-16: Recursive Project Root `rg` Block Without Exclusion
+- **Context:** Session initialized with cwd `/prj/app`.
+- **Action:** Execute `bash` command `rg TODO .`.
+- **Expected:** Blocked with reason requiring explicit `node_modules` exclusion.
+
+### TC-BASH-PATH-17: Recursive Project Root Scan Allowed With Exclusion
+- **Context:** Session initialized with cwd `/prj/app`.
+- **Action:** Execute one of:
+  - `find . -path ./node_modules -prune -o -type f -print`
+  - `grep -R --exclude-dir=node_modules TODO .`
+  - `rg --glob '!node_modules/**' TODO .`
+- **Expected:** Not blocked by the recursive-scan guard (normal safety checks continue).
+
+### TC-BASH-PATH-18: Pi Self-Knowledge Path Under Global `node_modules` Remains Allowed
+- **Context:** Session initialized with cwd `/prj/app`.
+- **Action:** Execute one of:
+  - `find /opt/homebrew/lib/node_modules/@mariozechner/pi-coding-agent -maxdepth 2 -type f`
+  - `grep -R "ExtensionContext" /opt/homebrew/lib/node_modules/@mariozechner/pi-coding-agent/README.md`
+- **Expected:** Not blocked by project `node_modules` blacklist or recursive project-root scan guard.
 
 ---
 

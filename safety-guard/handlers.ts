@@ -10,6 +10,23 @@ import { appendSecurityPolicy } from "./prompt";
 
 const STATIC_BLACKLIST = [...BLACKLIST];
 
+const hasNodeModulesExclusion = (command: string): boolean => {
+	return /--glob\s+['"]?!node_modules\/\*\*['"]?/i.test(command)
+		|| /--iglob\s+['"]?!node_modules\/\*\*['"]?/i.test(command)
+		|| /-g\s+['"]?!node_modules\/\*\*['"]?/i.test(command)
+		|| /-path\s+['"]?\.\/node_modules['"]?\s+-prune/i.test(command)
+		|| /-not\s+-path\s+['"]?\.\/node_modules\/\*['"]?/i.test(command)
+		|| /--exclude-dir(?:=|\s+)['"]?node_modules['"]?/i.test(command);
+};
+
+const isRecursiveProjectRootScan = (command: string, cwd: string): boolean => {
+	const cwdEscaped = escapeRegExp(cwd);
+	const findRoot = new RegExp(`\\bfind\\s+(\\.|${cwdEscaped})(?:\\s|$)`, "i");
+	const grepRecursiveRoot = new RegExp(`\\bgrep\\b[^\n]*\\s-(?:[^\n]*R|R[^\n]*)\\b[^\n]*(?:\\s\\.|\\s${cwdEscaped})(?:\\s|$)`, "i");
+	const rgRoot = new RegExp(`\\brg\\b[^\n]*(?:\\s\\.|\\s${cwdEscaped})(?:\\s|$)`, "i");
+	return findRoot.test(command) || grepRecursiveRoot.test(command) || rgRoot.test(command);
+};
+
 const rebuildSessionBlacklist = (cwd: string): void => {
 	BLACKLIST.length = 0;
 	BLACKLIST.push(...STATIC_BLACKLIST);
@@ -18,6 +35,7 @@ const rebuildSessionBlacklist = (cwd: string): void => {
 	BLACKLIST.push(
 		new RegExp(`^${cwdEscaped}/(?:.+/)?\\.env$`),
 		new RegExp(`^${cwdEscaped}/(?:.+/)?\\.env\\.`),
+		new RegExp(`^${cwdEscaped}/node_modules(?:/|$)`),
 	);
 };
 
@@ -47,7 +65,16 @@ export const handleBashTools = async (
 		};
 	}
 
-	// ── Pass 2: Destructive pattern check ────────────────────────────────────
+	// ── Pass 2: CWD-scoped recursive scans that may traverse ./node_modules ──
+	if (isRecursiveProjectRootScan(command, effectiveCwd) && !hasNodeModulesExclusion(command)) {
+		console.log(`[safety-guard] BLOCKED recursive project-root scan without node_modules exclusion: ${command}`);
+		return {
+			block: true,
+			reason: "Recursive project scan requires explicit node_modules exclusion",
+		};
+	}
+
+	// ── Pass 3: Destructive pattern check ────────────────────────────────────
 	const isDangerous = dangerousBashPatterns.some((p) => p.test(command));
 	if (isDangerous) {
 		if (ctx.hasUI !== true) {
@@ -243,7 +270,7 @@ export const onSessionStart = (event: SessionStartEvent, ctx: ExtensionContext) 
 		}
 
 		rebuildSessionBlacklist(effectiveCwd);
-		console.log(`[safety-guard] .env blacklist entries added for project directory (all depths): ${effectiveCwd}, security policy appended to system prompt`);
+		console.log(`[safety-guard] Project blacklist entries added (.env at all depths, node_modules): ${effectiveCwd}, security policy appended to system prompt`);
 
 		state.configLoaded = true;
 	} catch (error: unknown) {
