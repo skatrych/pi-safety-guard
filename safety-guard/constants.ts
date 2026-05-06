@@ -102,6 +102,8 @@ export const COMMAND_NAME_TOKENS = new Set([
 // Blacklisted paths (credentials/confidential data)
 export const BLACKLIST: RegExp[] = [
 	new RegExp(`^${escapeRegExp(HOME_DIR)}/\\.pi/agent/auth\\.json`), // Models credentials
+	new RegExp(`^${escapeRegExp(HOME_DIR)}/\\.pi/agent/sessions(?:/|$)`), // Agent session transcripts
+	new RegExp(`^${escapeRegExp(HOME_DIR)}/\\.claude/sessions(?:/|$)`), // Claude session transcripts
 	new RegExp(`^${escapeRegExp(HOME_DIR)}/\\.ssh/`), // SSH credentials
 	new RegExp(`^${escapeRegExp(HOME_DIR)}/\\.cursor/`), // Cursor IDE credentials
 	new RegExp(`^${escapeRegExp(HOME_DIR)}/\\.gnupg/`), // GPG credentials
