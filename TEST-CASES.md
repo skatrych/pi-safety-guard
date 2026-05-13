@@ -363,10 +363,14 @@
 - **Action:** Execute `bash` command `stat '~/.gitconfig'`.
 - **Expected:** Quotes are stripped, path is extracted, blacklist match triggers, and command is blocked immediately.
 
-### TC-BASH-PATH-06: Trailing Redirect Stripping
+### TC-BASH-PATH-06: Redirect Target Path Detection (Whitespace and No-Whitespace Forms)
 - **Context:** Any session (interactive or non-interactive).
-- **Action:** Execute `bash` command `cat ~/.ssh/config>`.
-- **Expected:** Redirect fragment is stripped from candidate path before blacklist check; command is blocked immediately.
+- **Action:** Execute:
+  - `echo x > /etc/test.conf`
+  - `echo x >/etc/test.conf`
+  - `cat < /etc/hosts`
+  - `cat </etc/hosts`
+- **Expected:** Redirect target paths are extracted structurally and commands are blocked immediately.
 
 ### TC-BASH-PATH-07: Flags Are Ignored in Parsing
 - **Context:** Any session (interactive or non-interactive).
@@ -432,6 +436,87 @@
   - `find /opt/homebrew/lib/node_modules/@mariozechner/pi-coding-agent -maxdepth 2 -type f`
   - `grep -R "ExtensionContext" /opt/homebrew/lib/node_modules/@mariozechner/pi-coding-agent/README.md`
 - **Expected:** Not blocked by project `node_modules` blacklist or recursive project-root scan guard.
+
+### TC-BASH-PATH-19: Heredoc Body Mention of Blacklisted Paths Does Not Block
+- **Context:** Any session (interactive or non-interactive).
+- **Action:** Execute:
+  - `cat <<'EOF'\nprint('/etc/passwd')\nprint('~/.ssh/id_rsa')\nEOF`
+- **Expected:** No blacklist block is triggered from heredoc body text alone.
+
+### TC-BASH-PATH-20: Regression Reproduction From `bug-summary.md`
+- **Context:** Any session (interactive or non-interactive).
+- **Action:** Execute the exact command payload from `bug-summary.md`.
+- **Expected:** The command is not blocked by blacklisted-path detection based solely on heredoc payload text.
+
+### TC-BASH-PATH-21: Tab-Stripping Heredoc Still Parses Later Operands
+- **Context:** Any session (interactive or non-interactive).
+- **Action:** Execute:
+  - `cat <<-EOF\nbody\nEOF\ncat /etc/passwd`
+- **Expected:** Heredoc body content is ignored, the `EOF` terminator is recognized for `<<-`, and the later `/etc/passwd` operand is still extracted and blocked.
+
+### TC-BASH-PATH-22: Quoted Code String vs Quoted Real Path Operand
+- **Context:** Any session (interactive or non-interactive).
+- **Action:** Execute:
+  - `python3 -c "print('/etc/passwd')"`
+  - `cat "/etc/passwd"`
+- **Expected:** First command is not blocked by path extraction alone; second command is blocked as direct blacklisted path access.
+
+### TC-BASH-PATH-23: Concatenated Quoted Path Fragments Still Count As Real Operands
+- **Context:** Any session (interactive or non-interactive).
+- **Action:** Execute:
+  - `cat "/etc"/passwd`
+  - `cat "./dir"/../.env`
+- **Expected:** Quote removal happens at the shell-word level, so both operands are reconstructed structurally and blocked as real path access.
+
+### TC-BASH-PATH-24: Background Operator Continues Parsing Later Operands
+- **Context:** Any session (interactive or non-interactive).
+- **Action:** Execute `echo hi & cat /etc/passwd`.
+- **Expected:** Parsing completes without hanging; later `/etc/passwd` operand is extracted and blocked.
+
+### TC-BASH-PATH-25: Background Operator Without Paths Does Not Hang
+- **Context:** Any session (interactive or non-interactive).
+- **Action:** Execute `echo hi & echo bye`.
+- **Expected:** Parsing completes without hanging and no path candidate is produced.
+
+### TC-BASH-PATH-26: Fd-Dup Redirect Does Not Hang and Keeps Earlier Path Detection
+- **Context:** Any session (interactive or non-interactive).
+- **Action:** Execute `cat /etc/passwd 2>&1`.
+- **Expected:** Parsing completes without hanging; `/etc/passwd` is extracted and blocked.
+
+### TC-BASH-PATH-27: Fd-Dup Redirect Alone Does Not Produce False Path Candidates
+- **Context:** Any session (interactive or non-interactive).
+- **Action:** Execute `echo hi 2>&1`.
+- **Expected:** Parsing completes without hanging and the redirect syntax does not create path candidates.
+
+### TC-BASH-PATH-28: Fd-Dup Redirect Followed by Separator Still Allows Later Path Extraction
+- **Context:** Any session (interactive or non-interactive).
+- **Action:** Execute `echo hi 2>&1; cat /etc/passwd`.
+- **Expected:** Parsing completes without hanging; later `/etc/passwd` operand is extracted and blocked.
+
+### TC-BASH-PATH-29: Comment Body Mention of Blacklisted Path Does Not Block
+- **Context:** Any session (interactive or non-interactive).
+- **Action:** Execute `echo ok # /etc/passwd`.
+- **Expected:** Text after `#` is treated as comment and does not produce path candidates or block.
+
+### TC-BASH-PATH-30: Real Operand Before Comment Still Blocks
+- **Context:** Any session (interactive or non-interactive).
+- **Action:** Execute `cat /etc/passwd # comment`.
+- **Expected:** Real operand before comment is extracted and blocked.
+
+### TC-BASH-PATH-31: Comment Immediately After Operator Does Not Block
+- **Context:** Any session (interactive or non-interactive).
+- **Action:** Execute `echo ok;# /etc/passwd`.
+- **Expected:** `#` starts a comment at a word boundary after `;`; comment text does not produce path candidates or block.
+
+### TC-BASH-PATH-32: Literal Hash Inside a Word Stays Literal
+- **Context:** Any session (interactive or non-interactive).
+- **Action:** Execute `echo foo#bar`.
+- **Expected:** `foo#bar` remains a normal word token and does not trigger comment truncation.
+
+### TC-BASH-PATH-33: Quoted Hash Does Not Start a Comment
+- **Context:** Any session (interactive or non-interactive).
+- **Action:** Execute `echo "# /etc/passwd"`.
+- **Expected:** Quoted `#` remains literal content and does not create comment truncation or path extraction.
 
 ---
 

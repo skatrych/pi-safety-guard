@@ -6,8 +6,15 @@ import { HOME_DIR } from "./constants";
  * Prevents pattern injection attacks.
  */
 export const sanitizeCommand = (cmd: string): string => {
-	return cmd
-		.replace(/[\u0000-\u001F\u007F]/g, "")
+	const withoutControlChars = Array.from(cmd)
+		.filter((char) => {
+			const code = char.charCodeAt(0);
+			const isBlockedControlCode = code <= 0x08 || code === 0x0B || code === 0x0C ||
+				(code >= 0x0E && code <= 0x1F) || code === 0x7F;
+			return !isBlockedControlCode;
+		})
+		.join("");
+	return withoutControlChars
 		.replace(/\u200B/g, "")
 		.replace(/\u200C/g, "")
 		.replace(/\u200D/g, "");
