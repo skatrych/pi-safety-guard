@@ -9,6 +9,7 @@ import { validateConfig } from "./config";
 import { appendSecurityPolicy } from "./prompt";
 
 const STATIC_BLACKLIST = [...BLACKLIST];
+const STATIC_WHITELIST = [...WHITELIST];
 
 const hasNodeModulesExclusion = (command: string): boolean => {
 	return /--glob\s+['"]?!node_modules\/\*\*['"]?/i.test(command)
@@ -252,28 +253,20 @@ export const onSessionStart = (event: SessionStartEvent, ctx: ExtensionContext) 
 				);
 			}
 		} else {
-			console.log("[safety-guard] No config found, using defaults (notify=true, allowed=~/.pi/)");
+			console.log("[safety-guard] No config found, using defaults (notify=true, global whitelist preserved)");
 		}
 
-		// Base whitelist paths
-		const basePaths = [
-			expandTilde("~/.pi/"),
-			expandTilde("/opt/homebrew/lib/node_modules/@mariozechner/pi-coding-agent/"),
-		];
-		
-		// Merge: base paths first, then config paths (deduped)
-		const mergedPaths = [...basePaths];
-		for (const p of state.allowedPaths) {
-			if (!mergedPaths.includes(p)) mergedPaths.push(p);
-		}
-		state.allowedPaths = mergedPaths;
+		// Session/project-specific whitelist paths from config.
+		const mergedPaths = [...state.allowedPaths];
 
 		// Dynamic project directory
-		state.allowedPaths.push(effectiveCwd);
+		if (!mergedPaths.includes(effectiveCwd)) mergedPaths.push(effectiveCwd);
+		state.allowedPaths = mergedPaths;
 		console.log(`[safety-guard] Project directory added to whitelist: ${effectiveCwd}`);
 
-		// Rebuild WHITELIST regexes
+		// Rebuild session/project-specific whitelist regexes, preserving global defaults.
 		WHITELIST.length = 0;
+		WHITELIST.push(...STATIC_WHITELIST);
 		for (const p of state.allowedPaths) {
 			WHITELIST.push(new RegExp(`^${escapeRegExp(p)}`));
 		}
@@ -285,13 +278,10 @@ export const onSessionStart = (event: SessionStartEvent, ctx: ExtensionContext) 
 	} catch (error: unknown) {
 		console.error("[safety-guard] Config load failed", error);
 		const fallbackCwd = effectiveCwd || process.cwd();
-		state.allowedPaths = [
-			expandTilde("~/.pi/"),
-			expandTilde("/opt/homebrew/lib/node_modules/@mariozechner/pi-coding-agent/"),
-			fallbackCwd,
-		];
+		state.allowedPaths = [fallbackCwd];
 		state.notificationsEnabled = true;
 		WHITELIST.length = 0;
+		WHITELIST.push(...STATIC_WHITELIST);
 		for (const p of state.allowedPaths) {
 			WHITELIST.push(new RegExp(`^${escapeRegExp(p)}`));
 		}

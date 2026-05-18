@@ -121,6 +121,6 @@ export const BLACKLIST: RegExp[] = [
 
 // Whitelisted paths (safe explicit directories)
 export const WHITELIST: RegExp[] = [
-	new RegExp(`^${HOME_DIR}/\\.pi/$`), // Pi config directory
+	new RegExp(`^${escapeRegExp(HOME_DIR)}/\\.pi(?:/|$)`), // Pi config directory
 	new RegExp(`^/opt/homebrew/lib/node_modules/@earendil-works/pi-coding-agent/`), // Pi agent code
 ];
