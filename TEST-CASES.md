@@ -69,7 +69,7 @@
 ### TC-INIT-08: Discovered `node_modules` Blacklist Added
 - **Context:** Session starts with cwd `/prj/app` and a confirmed `<cwd>/node_modules` directory exists at session start.
 - **Action:** Run `session_start`.
-- **Expected:** Runtime blacklist gains a boundary-safe pattern that blocks `/prj/app/node_modules` and all descendants. If no `node_modules` directory is discovered in the bounded scope, no project `node_modules` blacklist entry is added.
+- **Expected:** Runtime blacklist gains a boundary-safe exact-root pattern that blocks `/prj/app/node_modules` itself (optional trailing separator allowed) but does not blacklist package descendants via the shared blacklist. Write/edit still block the full tree via a separate guard. If no `node_modules` directory is discovered in the bounded scope, no project `node_modules` blacklist entry is added.
 
 ---
 
@@ -231,12 +231,18 @@
   - `apps/web/.env.production`
 - **Expected:** Each path is treated as blacklisted by project-specific runtime rules and blocked immediately.
 
-### TC-READ-11: Discovered Project `node_modules` Read Block
+### TC-READ-11: Specific Package Under Discovered `node_modules` Read Allowed
 - **Context:** Session initialized with cwd `/prj/app` and `<cwd>/node_modules` was discovered at session start.
 - **Action:** Trigger `read` for:
   - `node_modules/pkg/index.js`
   - `./node_modules/pkg/package.json`
-- **Expected:** Each resolves under `/prj/app/node_modules` and is blocked immediately as blacklisted.
+  - `node_modules/@scope/pkg/index.js`
+- **Expected:** Each resolves under `/prj/app/node_modules/<package>/...` and is allowed (not shared-blacklist blocked).
+
+### TC-READ-11b: Exact Discovered `node_modules` Root Read Blocked
+- **Context:** Session initialized with cwd `/prj/app` and `<cwd>/node_modules` was discovered at session start.
+- **Action:** Trigger `read` for `node_modules` (exact root).
+- **Expected:** Blocked immediately as blacklisted.
 
 ---
 
@@ -272,6 +278,11 @@
 - **Action:** Trigger `write { path: "../../secret.txt" }`.
 - **Expected:** Blocked with reason `"Path traversal detected"`.
 
+### TC-WRITE-08: Write Under Discovered `node_modules` Package Blocked
+- **Context:** Session initialized with cwd `/prj/app` and `<cwd>/node_modules` was discovered at session start.
+- **Action:** Trigger `write { path: "node_modules/pkg/index.js" }`.
+- **Expected:** Blocked; write/edit under discovered `node_modules` trees remain forbidden even for specific packages.
+
 ---
 
 ## 7. File I/O Protection - `edit`
@@ -305,6 +316,11 @@
 - **Context:** Attempt to escape current directory constraints.
 - **Action:** Trigger `edit { path: "../../../etc/passwd", edits: [...] }`.
 - **Expected:** Blocked with reason `"Path traversal detected"`.
+
+### TC-EDIT-07b: Edit Under Discovered `node_modules` Package Blocked
+- **Context:** Session initialized with cwd `/prj/app` and `<cwd>/node_modules` was discovered at session start.
+- **Action:** Trigger `edit { path: "node_modules/pkg/index.js", edits: [...] }`.
+- **Expected:** Blocked; write/edit under discovered `node_modules` trees remain forbidden even for specific packages.
 
 ### TC-EDIT-08: Edit Home `.env` Variant Protection
 - **Context:** Any session (interactive or non-interactive).
@@ -407,33 +423,55 @@
 - **Action:** Execute `bash` command `echo package-name`.
 - **Expected:** `package-name` is not treated as a path candidate by bash parsing.
 
-### TC-BASH-PATH-14: Recursive Project Root `find` Block Without Exclusion
+### TC-BASH-PATH-14: Project Root `find` Block Without Exclusion
 - **Context:** Session initialized with cwd `/prj/app` and a CWD-tree `node_modules` location was discovered at session start (`<cwd>/node_modules` or `<cwd>/<immediate-child>/node_modules`).
 - **Action:** Execute `bash` command `find . -type f`.
 - **Expected:** Blocked with reason requiring explicit `node_modules` exclusion.
 
-### TC-BASH-PATH-15: Recursive Project Root `grep -R` Block Without Exclusion
+### TC-BASH-PATH-15: Project Root `grep -R` Allowed Without Exclusion
 - **Context:** Session initialized with cwd `/prj/app` and a CWD-tree `node_modules` location was discovered at session start.
 - **Action:** Execute `bash` command `grep -R TODO .`.
-- **Expected:** Blocked with reason requiring explicit `node_modules` exclusion.
+- **Expected:** Not blocked by Pass 2 (Pass 2 gates `find` only).
 
-### TC-BASH-PATH-16: Recursive Project Root `rg` Block Without Exclusion
+### TC-BASH-PATH-16: Project Root `rg` Allowed Without Exclusion
 - **Context:** Session initialized with cwd `/prj/app` and a CWD-tree `node_modules` location was discovered at session start.
 - **Action:** Execute `bash` command `rg TODO .`.
-- **Expected:** Blocked with reason requiring explicit `node_modules` exclusion.
+- **Expected:** Not blocked by Pass 2 (Pass 2 gates `find` only).
 
-### TC-BASH-PATH-16b: Recursive Project Root Scan Allowed When No CWD-Tree `node_modules`
+### TC-BASH-PATH-16b: Project Root `find` Allowed When No CWD-Tree `node_modules`
 - **Context:** Session initialized with cwd `/prj/app` and no CWD-tree `node_modules` was discovered (parent-only or no install).
 - **Action:** Execute `bash` command `find . -type f`.
 - **Expected:** Not blocked by Pass 2 (normal safety checks continue).
 
-### TC-BASH-PATH-17: Recursive Project Root Scan Allowed With Exclusion
-- **Context:** Session initialized with cwd `/prj/app` and a CWD-tree `node_modules` location was discovered at session start.
+### TC-BASH-PATH-17: Project Root `find` Allowed With Exclusion (Including CWD Install)
+- **Context:** Session initialized with cwd `/prj/app` and `<cwd>/node_modules` was discovered at session start.
 - **Action:** Execute one of:
   - `find . -path ./node_modules -prune -o -type f -print`
-  - `grep -R --exclude-dir=node_modules TODO .`
-  - `rg --glob '!node_modules/**' TODO .`
-- **Expected:** Not blocked by the recursive-scan guard (Pass 2). Note: `find` prune forms that mention `./node_modules` may still be blocked by Pass 1 when `<cwd>/node_modules` itself is blacklisted.
+  - `find . -not -path './node_modules/*' -type f`
+  - `find ./ -path ./node_modules -prune -o -type f -print`
+- **Expected:** Not blocked by Pass 1 or Pass 2. The Pass 1 carve-out ignores the exact `./node_modules` root only because it appears as a `-path … -prune` operand.
+
+### TC-BASH-PATH-17b: Immediate-Child Discovered Root Must Be Pruned Explicitly
+- **Context:** Session initialized with cwd `/prj/app` and only `<cwd>/packages/node_modules` was discovered.
+- **Action:** Execute `find . -path ./packages/node_modules -prune -o -type f -print`.
+- **Expected:** Allowed (Pass 1 carve-out + Pass 2 exclusion for the discovered child root).
+
+### TC-BASH-PATH-17c: Literal `./node_modules` Prune Does Not Cover Child-Only Install
+- **Context:** Session initialized with cwd `/prj/app` and only `<cwd>/packages/node_modules` was discovered.
+- **Action:** Execute `find . -path ./node_modules -prune -o -type f -print`.
+- **Expected:** Blocked by Pass 2 (literal `./node_modules` is not a discovered root in this session).
+
+### TC-BASH-PATH-17d: Fake Exclusion Does Not Unlock Exact Root Bash
+- **Context:** Session initialized with cwd `/prj/app` and `<cwd>/node_modules` was discovered.
+- **Action:** Execute `ls ./node_modules --exclude-dir=node_modules`.
+- **Expected:** Blocked by Pass 1 (exclusion flag alone does not carve out a non-prune root operand).
+
+### TC-BASH-PATH-17e: Content-Search Flags Do Not Satisfy Pass 2 `find`
+- **Context:** Session initialized with cwd `/prj/app` and a CWD-tree `node_modules` location was discovered.
+- **Action:** Execute one of:
+  - `find . --exclude-dir=node_modules -type f`
+  - `find . --glob '!node_modules/**' -type f`
+- **Expected:** Blocked by Pass 2 (content-search flags are not find exclusions).
 
 ### TC-BASH-PATH-18: Pi Self-Knowledge Path Under Global `node_modules` Remains Allowed
 - **Context:** Session initialized with cwd `/prj/app`.
@@ -441,6 +479,25 @@
   - `find /opt/homebrew/lib/node_modules/@mariozechner/pi-coding-agent -maxdepth 2 -type f`
   - `grep -R "ExtensionContext" /opt/homebrew/lib/node_modules/@mariozechner/pi-coding-agent/README.md`
 - **Expected:** Not blocked by project `node_modules` blacklist or recursive project-root scan guard.
+
+### TC-BASH-PATH-18b: Exact Discovered `node_modules` Root Bash Blocked
+- **Context:** Session initialized with cwd `/prj/app` and `<cwd>/node_modules` was discovered at session start.
+- **Action:** Execute one of:
+  - `ls ./node_modules`
+  - `find ./node_modules -type f`
+- **Expected:** Blocked by Pass 1 (exact discovered root is blacklisted). Note: bare `node_modules` without `./` or `/` may not be extracted by the heuristic path parser.
+
+### TC-BASH-PATH-18c: Specific Package Under Discovered `node_modules` Bash Allowed
+- **Context:** Session initialized with cwd `/prj/app` and `<cwd>/node_modules` was discovered at session start.
+- **Action:** Execute one of:
+  - `cat node_modules/pkg/index.js`
+  - `ls node_modules/@scope`
+- **Expected:** Not blocked by Pass 1 (specific package path under discovered install).
+
+### TC-BASH-PATH-18d: Parent `node_modules` Root Blocked; Package Path Allowed
+- **Context:** Session initialized with cwd `/prj/app/project` and `<parent>/node_modules` was discovered (parent-only).
+- **Action:** Execute `ls ../node_modules`, then `cat ../node_modules/pkg.js`.
+- **Expected:** Exact parent root is blocked by Pass 1; specific package path under the parent install is allowed.
 
 ### TC-BASH-PATH-19: Heredoc Body Mention of Blacklisted Paths Does Not Block
 - **Context:** Any session (interactive or non-interactive).

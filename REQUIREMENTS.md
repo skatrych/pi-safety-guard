@@ -149,23 +149,31 @@ At the beginning of each `session_start`, before configuration loading can fail,
 5. **Session snapshot:** discovery results are stored for the session and are not refreshed until the next `session_start`. Dependency changes after initialization may leave protection stale until restart.
 
 ### 6.7. Direct protection for discovered `node_modules`
-Every confirmed discovery path is added to the shared runtime blacklist used by `bash`, `read`, `write`, and `edit`. Regex entries are escaped and boundary-safe so paths such as `/path/node_modules/pkg/index.js` match while `/path/node_modules_backup` does not.
+Every confirmed discovery path is added to the shared runtime blacklist as an **exact-root** entry used by `bash`, `read`, `write`, and `edit`. Regex entries are escaped and boundary-safe so `/path/node_modules` matches while `/path/node_modules_backup` and `/path/node_modules/pkg/...` do not match the shared blacklist.
 
-### 6.8. Pass 2 recursive-scan gating
-When a confirmed `node_modules` location lies in the CWD tree (`<cwd>/node_modules` or an immediate-child install), Pass 2 blocks unexcluded recursive project-root scans (`find`, recursive `grep`, `rg` rooted at `.` or the CWD). Parent-only discoveries are blacklisted for direct access but do **not** activate Pass 2, because CWD-root scans do not walk upward.
+**Specific-package exception (bash and read only):** paths that name at least one segment under a discovered install (for example `/path/node_modules/lodash/index.js` or `/path/node_modules/@scope/pkg/README.md`) are not blocked by the shared blacklist, so inspection and package-targeted bash commands are allowed.
 
-Existing root-scan detection (`isRecursiveProjectRootScan`) and accepted exclusion forms (`hasNodeModulesExclusion`) are unchanged. Bash inspection remains regex-based, not a complete shell parser.
+**write/edit remain fully blocked:** `write` and `edit` additionally reject any path under a discovered `node_modules` tree (exact root and all descendants), including specific package paths.
 
-Pass 2 exists to stop expensive/noisy root scans when CWD-tree dependencies are present. It does not guarantee that a blocked agent will retry with an exclusion; agents may pivot to `ls` or manual exploration instead.
+### 6.8. Pass 2 project-root `find` gating
+When a confirmed `node_modules` location lies in the CWD tree (`<cwd>/node_modules` or an immediate-child install), Pass 2 blocks unexcluded project-root **`find`** commands rooted at `.`, `./`, the CWD, or the CWD with a trailing separator. Unexcluded `rg` and recursive `grep` are **not** gated by Pass 2 (they are allowed through for agent usability; `rg` often already respects `.gitignore`).
+
+Parent-only discoveries blacklist the parent `node_modules` **root** for direct access but do **not** activate Pass 2, because CWD-root scans do not walk upward. Specific package paths under a parent install follow the same bash/read exception as CWD-tree installs.
+
+**Pass 1 carve-out for prune operands:** exact discovered `node_modules` roots are ignored by Pass 1 only when they appear as `-path <root> -prune` operands (for example `find . -path ./packages/node_modules -prune …`). A generic exclusion flag elsewhere in the command does **not** unlock browsing or reading the exact root. Other blacklisted paths in the same command still block.
+
+Bash inspection remains regex-based, not a complete shell parser.
+
+Pass 2 exists to stop expensive/noisy project-root `find` walks when CWD-tree dependencies are present. It does not guarantee that a blocked agent will retry with an exclusion; agents may pivot to `ls` or manual exploration instead.
 
 ### 6.9. Accepted `node_modules` exclusion forms
-When Pass 2 is active, these representative exclusion spellings are recognized (not an exhaustive list):
-- `rg --glob '!node_modules/**'`
-- `rg --iglob '!node_modules/**'`
-- `rg -g '!node_modules/**'`
-- `find . -path ./node_modules -prune`
-- `find . -not -path './node_modules/*'`
-- `grep -R --exclude-dir=node_modules`
+When Pass 2 is active, an exclusion is recognized when:
+- a `find -path <discovered-root> -prune` names any discovered install (for example `./node_modules` or `./packages/node_modules`), or
+- a `find -not -path '<discovered-root>/*'` form names any discovered install
+
+Literal `./node_modules` prune does **not** satisfy Pass 2 when the only discovered install is an immediate child (for example `packages/node_modules`); the prune path must match a discovered root.
+
+Content-search flags such as `rg --glob '!node_modules/**'` or `grep --exclude-dir=node_modules` are **not** Pass 2 exclusions (Pass 2 does not gate `rg`/`grep`, and those flags do not cause `find` to skip `node_modules`).
 
 ## 7. Project-Specific Secret Protection
 
@@ -238,8 +246,8 @@ The extension detects representative destructive or risky command families inclu
 
 ### 8.3. Bash evaluation order
 For bash commands, the extension evaluates in this fixed order:
-1. **Blacklist path detection** — if any extracted path argument matches the blacklist, the command is blocked immediately, regardless of whether the command is also dangerous. No user override is possible.
-2. **Conditional recursive project-root scan guard (Pass 2)** — when CWD-tree `node_modules` was discovered at session start, blocks unexcluded `find` / recursive `grep` / `rg` scans rooted at `.` or the CWD. Skipped when no CWD-tree install was discovered or when an accepted exclusion is present.
+1. **Blacklist path detection** — if any extracted path argument matches the blacklist, the command is blocked immediately, regardless of whether the command is also dangerous. No user override is possible. Exact discovered `node_modules` roots are skipped only when they appear as `-path <root> -prune` operands (Pass 1 carve-out).
+2. **Conditional project-root `find` guard (Pass 2)** — when CWD-tree `node_modules` was discovered at session start, blocks unexcluded `find` rooted at `.`, `./`, the CWD, or the CWD with a trailing separator. Unexcluded `rg` / recursive `grep` are not gated. Skipped when no CWD-tree install was discovered or when an accepted find exclusion referencing a discovered root is present.
 3. **Dangerous pattern detection** — only reached if no blacklisted path was found and Pass 2 did not block. If a dangerous pattern is detected, user confirmation is required to proceed. Blocked if confirmation cannot be obtained.
 
 The whitelist is intentionally not consulted for bash commands. Any bash command that passes all checks above is allowed to proceed regardless of whether its path arguments are whitelisted.
@@ -364,3 +372,4 @@ Current implementation limitations that should be preserved or intentionally add
 - discovery is a session snapshot and may be stale after dependency installation or removal until the next `session_start`
 - only lexical discovered paths are protected; symlink aliases outside the discovered set are not covered
 - Pass 2 does not steer models toward exclusion retries; blocked agents may switch to `ls` or manual exploration
+- Pass 2 gates project-root `find` only; unexcluded `rg` / `grep -R` may still walk `node_modules` when those tools do not self-ignore

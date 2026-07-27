@@ -1,10 +1,10 @@
 import type { ExtensionContext, SessionStartEvent, ToolCallEvent } from "@mariozechner/pi-coding-agent";
 import { existsSync, readFileSync as fsReadFileSync } from "node:fs";
-import { join, resolve, dirname, sep } from "node:path";
+import { join, resolve, dirname, sep, relative } from "node:path";
 import { state } from "./state";
 import { sanitizeCommand, hasPathTraversal, expandTilde } from "./utils";
 import { dangerousBashPatterns, BLACKLIST, WHITELIST, escapeRegExp } from "./constants";
-import { findBlacklistedPathInCommand, checkPathSecurity } from "./security";
+import { checkPathSecurity, extractPathsFromCommand } from "./security";
 import { validateConfig } from "./config";
 import { appendSecurityPolicy } from "./prompt";
 import { discoverNodeModules } from "./node-modules";
@@ -12,21 +12,81 @@ import { discoverNodeModules } from "./node-modules";
 const STATIC_BLACKLIST = [...BLACKLIST];
 const STATIC_WHITELIST = [...WHITELIST];
 
-const hasNodeModulesExclusion = (command: string): boolean => {
-	return /--glob\s+['"]?!node_modules\/\*\*['"]?/i.test(command)
-		|| /--iglob\s+['"]?!node_modules\/\*\*['"]?/i.test(command)
-		|| /-g\s+['"]?!node_modules\/\*\*['"]?/i.test(command)
-		|| /-path\s+['"]?\.\/node_modules['"]?\s+-prune/i.test(command)
-		|| /-not\s+-path\s+['"]?\.\/node_modules\/\*['"]?/i.test(command)
-		|| /--exclude-dir(?:=|\s+)['"]?node_modules['"]?/i.test(command);
+const stripTrailingSep = (path: string): string => {
+	if (path.length > 1 && path.endsWith(sep)) {
+		return path.slice(0, -1);
+	}
+	return path;
 };
 
-const isRecursiveProjectRootScan = (command: string, cwd: string): boolean => {
-	const cwdEscaped = escapeRegExp(cwd);
-	const findRoot = new RegExp(`\\bfind\\s+(\\.|${cwdEscaped})(?:\\s|$)`, "i");
-	const grepRecursiveRoot = new RegExp(`\\bgrep\\b[^\n]*\\s-(?:[^\n]*R|R[^\n]*)\\b[^\n]*(?:\\s\\.|\\s${cwdEscaped})(?:\\s|$)`, "i");
-	const rgRoot = new RegExp(`\\brg\\b[^\n]*(?:\\s\\.|\\s${cwdEscaped})(?:\\s|$)`, "i");
-	return findRoot.test(command) || grepRecursiveRoot.test(command) || rgRoot.test(command);
+const resolveCommandPathToken = (token: string, cwd: string): string => {
+	const cleaned = token.replace(/^['"]|['"]$/g, "");
+	if (cleaned.startsWith("~/") || cleaned === "~") {
+		return stripTrailingSep(expandTilde(cleaned));
+	}
+	if (cleaned.startsWith("/")) {
+		return stripTrailingSep(cleaned);
+	}
+	return stripTrailingSep(resolve(cwd, cleaned));
+};
+
+const discoveredRootSet = (): Set<string> => {
+	return new Set(state.nodeModulesPaths.map(stripTrailingSep));
+};
+
+/**
+ * Discovered node_modules roots referenced as `-path <root> -prune` operands.
+ * Used for Pass 1 carve-out (only prune operands) and Pass 2 exclusion detection.
+ */
+const prunedDiscoveredRoots = (command: string, cwd: string): Set<string> => {
+	const roots = discoveredRootSet();
+	const found = new Set<string>();
+	const re = /-path\s+(['"]?)([^\s'"]+)\1\s+-prune/gi;
+	let match: RegExpExecArray | null;
+	while ((match = re.exec(command)) !== null) {
+		const resolved = resolveCommandPathToken(match[2], cwd);
+		if (roots.has(resolved)) {
+			found.add(resolved);
+		}
+	}
+	return found;
+};
+
+const hasNotPathExclusionForDiscoveredRoots = (command: string, cwd: string): boolean => {
+	for (const root of state.nodeModulesPaths) {
+		const normRoot = stripTrailingSep(root);
+		const rel = relative(cwd, normRoot);
+		const tokens = [`${normRoot}/*`];
+		if (rel && !rel.startsWith("..") && !rel.startsWith(sep)) {
+			tokens.push(`${rel}/*`, `./${rel}/*`);
+		}
+		for (const token of tokens) {
+			const escaped = escapeRegExp(token);
+			if (new RegExp(`-not\\s+-path\\s+['"]?${escaped}['"]?`, "i").test(command)) {
+				return true;
+			}
+		}
+	}
+	return false;
+};
+
+/**
+ * True when the command has an accepted find exclusion for a discovered node_modules root.
+ * Content-search flags (rg --glob, grep --exclude-dir) are ignored: Pass 2 gates find only,
+ * and those flags do not make find skip node_modules.
+ */
+const hasNodeModulesExclusion = (command: string, cwd: string): boolean => {
+	if (prunedDiscoveredRoots(command, cwd).size > 0) {
+		return true;
+	}
+	return hasNotPathExclusionForDiscoveredRoots(command, cwd);
+};
+
+/** Pass 2: project-root `find` only (rg/grep are not gated). */
+const isProjectRootFind = (command: string, cwd: string): boolean => {
+	const cwdEscaped = escapeRegExp(stripTrailingSep(cwd));
+	// `.`, `./`, absolute cwd, and absolute cwd with trailing separator
+	return new RegExp(`\\bfind\\s+(\\.\\/?|${cwdEscaped}\\/?)(?:\\s|$)`, "i").test(command);
 };
 
 const rebuildSessionBlacklist = (
@@ -44,10 +104,42 @@ const rebuildSessionBlacklist = (
 
 	const separator = escapeRegExp(sep);
 	for (const nodeModulesPath of nodeModulesPaths) {
+		// Exact root only: bash/read may target specific packages under node_modules.
 		BLACKLIST.push(
-			new RegExp(`^${escapeRegExp(nodeModulesPath)}(?:${separator}|$)`)
+			new RegExp(`^${escapeRegExp(nodeModulesPath)}(?:${separator})?$`)
 		);
 	}
+};
+
+const isUnderDiscoveredNodeModules = (resolvedPath: string): boolean => {
+	for (const nodeModulesPath of state.nodeModulesPaths) {
+		if (
+			resolvedPath === nodeModulesPath ||
+			resolvedPath.startsWith(nodeModulesPath + sep)
+		) {
+			return true;
+		}
+	}
+	return false;
+};
+
+/**
+ * Pass 1: first blacklisted path in the command.
+ * Exact discovered node_modules roots are ignored only when they appear as
+ * `-path <root> -prune` operands (not merely because some exclusion flag exists).
+ */
+const findPass1OffendingPath = (command: string, cwd: string): string | null => {
+	const prunedRoots = prunedDiscoveredRoots(command, cwd);
+	for (const path of extractPathsFromCommand(command, cwd)) {
+		if (!BLACKLIST.some((bl) => bl.test(path))) {
+			continue;
+		}
+		if (prunedRoots.has(stripTrailingSep(path))) {
+			continue;
+		}
+		return path;
+	}
+	return null;
 };
 
 /**
@@ -65,7 +157,8 @@ export const handleBashTools = async (
 	const effectiveCwd = resolve(ctx.cwd || process.cwd());
 
 	// ── Pass 1: Blacklisted path detection — unconditional block ─────────────
-	const offendingPath = findBlacklistedPathInCommand(command, effectiveCwd);
+	// Exception: exact discovered node_modules roots only when used as -path … -prune.
+	const offendingPath = findPass1OffendingPath(command, effectiveCwd);
 	if (offendingPath !== null) {
 		console.log(
 			`[safety-guard] BLOCKED bash access to blacklisted path: ${offendingPath}`
@@ -76,16 +169,16 @@ export const handleBashTools = async (
 		};
 	}
 
-	// ── Pass 2: CWD-scoped recursive scans that may traverse ./node_modules ──
+	// ── Pass 2: CWD-scoped project-root find that may traverse ./node_modules ─
 	if (
 		state.nodeModulesInCwdTree &&
-		isRecursiveProjectRootScan(command, effectiveCwd) &&
-		!hasNodeModulesExclusion(command)
+		isProjectRootFind(command, effectiveCwd) &&
+		!hasNodeModulesExclusion(command, effectiveCwd)
 	) {
-		console.log(`[safety-guard] BLOCKED recursive project-root scan without node_modules exclusion: ${command}`);
+		console.log(`[safety-guard] BLOCKED project-root find without node_modules exclusion: ${command}`);
 		return {
 			block: true,
-			reason: "Recursive project scan requires explicit node_modules exclusion",
+			reason: "Project-root find requires explicit node_modules exclusion",
 		};
 	}
 
@@ -149,6 +242,21 @@ export const handleFileIOTools = async (
 		return {
 			block: true,
 			reason: "Blacklisted path blocked (credentials/confidential)",
+		};
+	}
+
+	// write/edit: block entire discovered node_modules trees (package paths included).
+	// bash/read may inspect specific packages; mutation stays forbidden.
+	if (
+		(toolName === "write" || toolName === "edit") &&
+		isUnderDiscoveredNodeModules(resolvedPath)
+	) {
+		console.log(
+			`[safety-guard] BLOCKED ${toolName} under discovered node_modules: ${resolvedPath}`
+		);
+		return {
+			block: true,
+			reason: "Write/edit under node_modules is blocked",
 		};
 	}
 
