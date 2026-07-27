@@ -66,10 +66,10 @@
 - **Action:** Run `session_start` for cwd `/prj/app`, then run `session_start` again for cwd `/prj/other`.
 - **Expected:** Runtime blacklist keeps static built-in entries and exactly one project-specific `.env` pair for the current cwd (`/prj/other`). Entries for `/prj/app` are no longer present.
 
-### TC-INIT-08: Project `node_modules` Blacklist Added
-- **Context:** Session starts with cwd `/prj/app`.
+### TC-INIT-08: Discovered `node_modules` Blacklist Added
+- **Context:** Session starts with cwd `/prj/app` and a confirmed `<cwd>/node_modules` directory exists at session start.
 - **Action:** Run `session_start`.
-- **Expected:** Runtime blacklist gains a pattern that blocks `/prj/app/node_modules` and all descendants.
+- **Expected:** Runtime blacklist gains a boundary-safe pattern that blocks `/prj/app/node_modules` and all descendants. If no `node_modules` directory is discovered in the bounded scope, no project `node_modules` blacklist entry is added.
 
 ---
 
@@ -231,8 +231,8 @@
   - `apps/web/.env.production`
 - **Expected:** Each path is treated as blacklisted by project-specific runtime rules and blocked immediately.
 
-### TC-READ-11: Project `node_modules` Read Block
-- **Context:** Session initialized with cwd `/prj/app`.
+### TC-READ-11: Discovered Project `node_modules` Read Block
+- **Context:** Session initialized with cwd `/prj/app` and `<cwd>/node_modules` was discovered at session start.
 - **Action:** Trigger `read` for:
   - `node_modules/pkg/index.js`
   - `./node_modules/pkg/package.json`
@@ -408,27 +408,32 @@
 - **Expected:** `package-name` is not treated as a path candidate by bash parsing.
 
 ### TC-BASH-PATH-14: Recursive Project Root `find` Block Without Exclusion
-- **Context:** Session initialized with cwd `/prj/app`.
+- **Context:** Session initialized with cwd `/prj/app` and a CWD-tree `node_modules` location was discovered at session start (`<cwd>/node_modules` or `<cwd>/<immediate-child>/node_modules`).
 - **Action:** Execute `bash` command `find . -type f`.
 - **Expected:** Blocked with reason requiring explicit `node_modules` exclusion.
 
 ### TC-BASH-PATH-15: Recursive Project Root `grep -R` Block Without Exclusion
-- **Context:** Session initialized with cwd `/prj/app`.
+- **Context:** Session initialized with cwd `/prj/app` and a CWD-tree `node_modules` location was discovered at session start.
 - **Action:** Execute `bash` command `grep -R TODO .`.
 - **Expected:** Blocked with reason requiring explicit `node_modules` exclusion.
 
 ### TC-BASH-PATH-16: Recursive Project Root `rg` Block Without Exclusion
-- **Context:** Session initialized with cwd `/prj/app`.
+- **Context:** Session initialized with cwd `/prj/app` and a CWD-tree `node_modules` location was discovered at session start.
 - **Action:** Execute `bash` command `rg TODO .`.
 - **Expected:** Blocked with reason requiring explicit `node_modules` exclusion.
 
+### TC-BASH-PATH-16b: Recursive Project Root Scan Allowed When No CWD-Tree `node_modules`
+- **Context:** Session initialized with cwd `/prj/app` and no CWD-tree `node_modules` was discovered (parent-only or no install).
+- **Action:** Execute `bash` command `find . -type f`.
+- **Expected:** Not blocked by Pass 2 (normal safety checks continue).
+
 ### TC-BASH-PATH-17: Recursive Project Root Scan Allowed With Exclusion
-- **Context:** Session initialized with cwd `/prj/app`.
+- **Context:** Session initialized with cwd `/prj/app` and a CWD-tree `node_modules` location was discovered at session start.
 - **Action:** Execute one of:
   - `find . -path ./node_modules -prune -o -type f -print`
   - `grep -R --exclude-dir=node_modules TODO .`
   - `rg --glob '!node_modules/**' TODO .`
-- **Expected:** Not blocked by the recursive-scan guard (normal safety checks continue).
+- **Expected:** Not blocked by the recursive-scan guard (Pass 2). Note: `find` prune forms that mention `./node_modules` may still be blocked by Pass 1 when `<cwd>/node_modules` itself is blacklisted.
 
 ### TC-BASH-PATH-18: Pi Self-Knowledge Path Under Global `node_modules` Remains Allowed
 - **Context:** Session initialized with cwd `/prj/app`.

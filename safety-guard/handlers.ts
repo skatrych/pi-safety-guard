@@ -1,12 +1,13 @@
 import type { ExtensionContext, SessionStartEvent, ToolCallEvent } from "@mariozechner/pi-coding-agent";
 import { existsSync, readFileSync as fsReadFileSync } from "node:fs";
-import { join, resolve, dirname } from "node:path";
+import { join, resolve, dirname, sep } from "node:path";
 import { state } from "./state";
 import { sanitizeCommand, hasPathTraversal, expandTilde } from "./utils";
 import { dangerousBashPatterns, BLACKLIST, WHITELIST, escapeRegExp } from "./constants";
 import { findBlacklistedPathInCommand, checkPathSecurity } from "./security";
 import { validateConfig } from "./config";
 import { appendSecurityPolicy } from "./prompt";
+import { discoverNodeModules } from "./node-modules";
 
 const STATIC_BLACKLIST = [...BLACKLIST];
 const STATIC_WHITELIST = [...WHITELIST];
@@ -28,7 +29,10 @@ const isRecursiveProjectRootScan = (command: string, cwd: string): boolean => {
 	return findRoot.test(command) || grepRecursiveRoot.test(command) || rgRoot.test(command);
 };
 
-const rebuildSessionBlacklist = (cwd: string): void => {
+const rebuildSessionBlacklist = (
+	cwd: string,
+	nodeModulesPaths: string[]
+): void => {
 	BLACKLIST.length = 0;
 	BLACKLIST.push(...STATIC_BLACKLIST);
 
@@ -36,8 +40,14 @@ const rebuildSessionBlacklist = (cwd: string): void => {
 	BLACKLIST.push(
 		new RegExp(`^${cwdEscaped}/(?:.+/)?\\.env$`),
 		new RegExp(`^${cwdEscaped}/(?:.+/)?\\.env\\.`),
-		new RegExp(`^${cwdEscaped}/node_modules(?:/|$)`),
 	);
+
+	const separator = escapeRegExp(sep);
+	for (const nodeModulesPath of nodeModulesPaths) {
+		BLACKLIST.push(
+			new RegExp(`^${escapeRegExp(nodeModulesPath)}(?:${separator}|$)`)
+		);
+	}
 };
 
 /**
@@ -52,7 +62,7 @@ export const handleBashTools = async (
 	}
 
 	const command = sanitizeCommand(input.command);
-	const effectiveCwd = ctx.cwd || process.cwd();
+	const effectiveCwd = resolve(ctx.cwd || process.cwd());
 
 	// ── Pass 1: Blacklisted path detection — unconditional block ─────────────
 	const offendingPath = findBlacklistedPathInCommand(command, effectiveCwd);
@@ -67,7 +77,11 @@ export const handleBashTools = async (
 	}
 
 	// ── Pass 2: CWD-scoped recursive scans that may traverse ./node_modules ──
-	if (isRecursiveProjectRootScan(command, effectiveCwd) && !hasNodeModulesExclusion(command)) {
+	if (
+		state.nodeModulesInCwdTree &&
+		isRecursiveProjectRootScan(command, effectiveCwd) &&
+		!hasNodeModulesExclusion(command)
+	) {
 		console.log(`[safety-guard] BLOCKED recursive project-root scan without node_modules exclusion: ${command}`);
 		return {
 			block: true,
@@ -198,9 +212,18 @@ export const handleToolCall = async (event: ToolCallEvent, ctx: ExtensionContext
  * Session start handler: Load config and set up whitelist/blacklist.
  */
 export const onSessionStart = (event: SessionStartEvent, ctx: ExtensionContext) => {
-	let effectiveCwd = "";
+	const effectiveCwd = resolve(ctx.cwd || process.cwd());
+	const nodeModulesDiscovery = discoverNodeModules(effectiveCwd);
+
+	state.nodeModulesPaths = nodeModulesDiscovery.paths;
+	state.nodeModulesInCwdTree = nodeModulesDiscovery.nodeModulesInCwdTree;
+
+	console.log(
+		`[safety-guard] node_modules locations=${nodeModulesDiscovery.paths.length}, ` +
+		`inCwdTree=${nodeModulesDiscovery.nodeModulesInCwdTree}`
+	);
+
 	try {
-		effectiveCwd = ctx.cwd || process.cwd();
 		// Append security policy to system prompt
 		if (ctx.systemPrompt) {
 			ctx.systemPrompt = appendSecurityPolicy(ctx.systemPrompt);
@@ -271,7 +294,7 @@ export const onSessionStart = (event: SessionStartEvent, ctx: ExtensionContext) 
 			WHITELIST.push(new RegExp(`^${escapeRegExp(p)}`));
 		}
 
-		rebuildSessionBlacklist(effectiveCwd);
+		rebuildSessionBlacklist(effectiveCwd, nodeModulesDiscovery.paths);
 		console.log(`[safety-guard] Project blacklist entries added (.env at all depths, node_modules): ${effectiveCwd}, security policy appended to system prompt`);
 
 		state.configLoaded = true;
@@ -285,7 +308,7 @@ export const onSessionStart = (event: SessionStartEvent, ctx: ExtensionContext) 
 		for (const p of state.allowedPaths) {
 			WHITELIST.push(new RegExp(`^${escapeRegExp(p)}`));
 		}
-		rebuildSessionBlacklist(fallbackCwd);
+		rebuildSessionBlacklist(fallbackCwd, nodeModulesDiscovery.paths);
 		state.configLoaded = true;
 	}
 };

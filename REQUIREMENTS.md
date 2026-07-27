@@ -41,7 +41,8 @@ Before configuration has finished loading during `session_start`, all monitored 
 
 ### 4.2. Session start responsibilities
 On `session_start`, the extension:
-- determines effective current working directory (`ctx.cwd` or `process.cwd()`)
+- determines effective current working directory (`resolve(ctx.cwd || process.cwd())`)
+- discovers confirmed `node_modules` directories once (see section 6.6)
 - appends security policy text to `ctx.systemPrompt` if present
 - appends security policy text to `ctx.aiSystemMessage` if present
 - attempts to load configuration
@@ -49,7 +50,7 @@ On `session_start`, the extension:
 - merges base allowed paths with configured allowed paths
 - adds project directory to the whitelist
 - rebuilds runtime whitelist regexes
-- appends project-specific `.env` blacklist entries
+- appends project-specific `.env` blacklist entries and discovered `node_modules` paths
 - marks configuration as loaded
 
 ## 5. Configuration Behavior
@@ -136,7 +137,35 @@ Tilde handling:
 The exported `WHITELIST` array is mutable and is fully rebuilt during each `session_start` based on merged allowed paths.
 
 ### 6.5. Runtime blacklist management
-The exported `BLACKLIST` array is mutable. At each `session_start`, it is reset to the base hardcoded blacklist entries and then augmented with project-specific `.env` entries for the current working directory. This ensures that blacklist entries from previous sessions do not accumulate.
+The exported `BLACKLIST` array is mutable. At each `session_start`, it is reset to the base hardcoded blacklist entries and then augmented with project-specific `.env` entries for the current working directory and boundary-safe regexes for each discovered `node_modules` path. This ensures that blacklist entries from previous sessions do not accumulate.
+
+### 6.6. Bounded `node_modules` discovery
+At the beginning of each `session_start`, before configuration loading can fail, the extension performs one bounded filesystem discovery:
+
+1. **Candidates checked:** `<cwd>/node_modules`, `<parent-of-cwd>/node_modules`, and `<cwd>/<immediate-child>/node_modules` for each immediate child directory of the CWD (excluding a child literally named `node_modules`).
+2. **Out of scope:** grandparent `node_modules`, deeper descendants such as `<cwd>/packages/ui/node_modules`, recursive traversal, workspace manifest parsing, and per-tool-call rediscovery.
+3. **Confirmation rule:** only paths where `statSync` reports a directory are retained. A regular file named `node_modules` is ignored. A final `node_modules` symlink to a directory counts; discovered paths remain lexical (no `realpath()` canonicalization).
+4. **Error handling:** `statSync` or `readdirSync` failures treat the affected candidate or listing as absent. Discovery errors do not fail session initialization.
+5. **Session snapshot:** discovery results are stored for the session and are not refreshed until the next `session_start`. Dependency changes after initialization may leave protection stale until restart.
+
+### 6.7. Direct protection for discovered `node_modules`
+Every confirmed discovery path is added to the shared runtime blacklist used by `bash`, `read`, `write`, and `edit`. Regex entries are escaped and boundary-safe so paths such as `/path/node_modules/pkg/index.js` match while `/path/node_modules_backup` does not.
+
+### 6.8. Pass 2 recursive-scan gating
+When a confirmed `node_modules` location lies in the CWD tree (`<cwd>/node_modules` or an immediate-child install), Pass 2 blocks unexcluded recursive project-root scans (`find`, recursive `grep`, `rg` rooted at `.` or the CWD). Parent-only discoveries are blacklisted for direct access but do **not** activate Pass 2, because CWD-root scans do not walk upward.
+
+Existing root-scan detection (`isRecursiveProjectRootScan`) and accepted exclusion forms (`hasNodeModulesExclusion`) are unchanged. Bash inspection remains regex-based, not a complete shell parser.
+
+Pass 2 exists to stop expensive/noisy root scans when CWD-tree dependencies are present. It does not guarantee that a blocked agent will retry with an exclusion; agents may pivot to `ls` or manual exploration instead.
+
+### 6.9. Accepted `node_modules` exclusion forms
+When Pass 2 is active, these representative exclusion spellings are recognized (not an exhaustive list):
+- `rg --glob '!node_modules/**'`
+- `rg --iglob '!node_modules/**'`
+- `rg -g '!node_modules/**'`
+- `find . -path ./node_modules -prune`
+- `find . -not -path './node_modules/*'`
+- `grep -R --exclude-dir=node_modules`
 
 ## 7. Project-Specific Secret Protection
 
@@ -210,9 +239,10 @@ The extension detects representative destructive or risky command families inclu
 ### 8.3. Bash evaluation order
 For bash commands, the extension evaluates in this fixed order:
 1. **Blacklist path detection** — if any extracted path argument matches the blacklist, the command is blocked immediately, regardless of whether the command is also dangerous. No user override is possible.
-2. **Dangerous pattern detection** — only reached if no blacklisted path was found. If a dangerous pattern is detected, user confirmation is required to proceed. Blocked if confirmation cannot be obtained.
+2. **Conditional recursive project-root scan guard (Pass 2)** — when CWD-tree `node_modules` was discovered at session start, blocks unexcluded `find` / recursive `grep` / `rg` scans rooted at `.` or the CWD. Skipped when no CWD-tree install was discovered or when an accepted exclusion is present.
+3. **Dangerous pattern detection** — only reached if no blacklisted path was found and Pass 2 did not block. If a dangerous pattern is detected, user confirmation is required to proceed. Blocked if confirmation cannot be obtained.
 
-The whitelist is intentionally not consulted for bash commands. Any bash command that passes both checks above is allowed to proceed regardless of whether its path arguments are whitelisted.
+The whitelist is intentionally not consulted for bash commands. Any bash command that passes all checks above is allowed to proceed regardless of whether its path arguments are whitelisted.
 
 ### 8.4. Bash path extraction purpose
 The extension extracts path-like arguments from all bash commands and checks them against blacklist rules. This applies to both read-like and destructive commands, ensuring that dangerous commands targeting blacklisted paths are caught at the blacklist check rather than the dangerous-command confirmation flow.
@@ -330,3 +360,7 @@ Current implementation limitations that should be preserved or intentionally add
 - unmonitored tools are not protected
 - prompt policy is partially stricter than runtime enforcement: dangerous bash commands that do not target a blacklisted path can still be approved by the user in interactive mode
 - bash path extraction is heuristic and may miss complex shell-expanded references
+- `node_modules` discovery is bounded to CWD, one parent, and immediate CWD children; grandparent installs and deeper workspace layouts are not discovered from the workspace root
+- discovery is a session snapshot and may be stale after dependency installation or removal until the next `session_start`
+- only lexical discovered paths are protected; symlink aliases outside the discovered set are not covered
+- Pass 2 does not steer models toward exclusion retries; blocked agents may switch to `ls` or manual exploration

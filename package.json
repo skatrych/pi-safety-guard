@@ -6,7 +6,7 @@
   "type": "module",
   "scripts": {
     "lint": "eslint safety-guard/**/*.ts",
-    "test": "echo \"Error: no test specified\" && exit 1"
+    "test": "node --import tsx --test safety-guard/handlers.test.ts"
   },
   "devDependencies": {
     "@eslint/js": "^10.0.1",
@@ -14,6 +14,7 @@
     "@typescript-eslint/parser": "^8.59.0",
     "eslint": "^10.2.1",
     "eslint-config-google": "^0.14.0",
+    "tsx": "^4.19.4",
     "typescript": "^6.0.3"
   }
 }
