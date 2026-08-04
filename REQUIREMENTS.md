@@ -246,9 +246,10 @@ The extension detects representative destructive or risky command families inclu
 
 ### 8.3. Bash evaluation order
 For bash commands, the extension evaluates in this fixed order:
-1. **Blacklist path detection** — if any extracted path argument matches the blacklist, the command is blocked immediately, regardless of whether the command is also dangerous. No user override is possible. Exact discovered `node_modules` roots are skipped only when they appear as `-path <root> -prune` operands (Pass 1 carve-out).
+1. **Blacklist path detection** — if any extracted path argument matches the blacklist, the command is blocked immediately, regardless of whether the command is also dangerous. No user override is possible, except that an exact discovered `node_modules` root may be a target of an otherwise-qualified project-local deletion. Exact discovered `node_modules` roots are also skipped when they appear as `-path <root> -prune` operands (Pass 1 carve-out).
 2. **Conditional project-root `find` guard (Pass 2)** — when CWD-tree `node_modules` was discovered at session start, blocks unexcluded `find` rooted at `.`, `./`, the CWD, or the CWD with a trailing separator. Unexcluded `rg` / recursive `grep` are not gated. Skipped when no CWD-tree install was discovered or when an accepted find exclusion referencing a discovered root is present.
-3. **Dangerous pattern detection** — only reached if no blacklisted path was found and Pass 2 did not block. If a dangerous pattern is detected, user confirmation is required to proceed. Blocked if confirmation cannot be obtained.
+3. **Project-local deletion allowance** — a direct filesystem deletion command (`rm`, `unlink`, `rmdir`, or `shred`) is allowed without confirmation when all explicit targets resolve strictly inside the project directory. This allowance supports command chains that first `cd` into a project subdirectory. Sensitive paths, including project `.env` files and static blacklist entries, remain blocked; unknown shell expansions and hidden-file globs do not qualify.
+4. **Dangerous pattern detection** — only reached if no blacklisted path was found, Pass 2 did not block, and the project-local deletion allowance did not apply. If a dangerous pattern is detected, user confirmation is required to proceed. Blocked if confirmation cannot be obtained.
 
 The whitelist is intentionally not consulted for bash commands. Any bash command that passes all checks above is allowed to proceed regardless of whether its path arguments are whitelisted.
 

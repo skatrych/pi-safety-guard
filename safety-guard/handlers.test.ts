@@ -531,6 +531,36 @@ describe("handler integration", { concurrency: false }, () => {
 			assert.equal(catPkg, undefined);
 			const lsScoped = await handleBashTools({ command: "ls node_modules/@scope" }, ctx);
 			assert.equal(lsScoped, undefined);
+			const removeRoot = await handleBashTools({ command: "rm -rf ./node_modules" }, ctx);
+			assert.equal(removeRoot, undefined);
+		} finally {
+			cleanupFixture(fixture);
+		}
+	});
+
+	test("handler: allows project-local rm in a command chain after cd", async () => {
+		const fixture = createFixture();
+		try {
+			const project = join(fixture, "tekton-cicd");
+			mkdirSync(join(project, "src", "k8s-io", "services"), { recursive: true });
+			initSession(fixture);
+			const command = [
+				"cd tekton-cicd && rm -f src/k8s-io/services/k8s-io.service.js && npm run build 2>&1 && npm test -- k8s-io --runInBand",
+				"2>&1 | grep -E \"(Error:|BadRequestException:|✓)\" | head -10",
+			].join("\n");
+			assert.equal(await handleBashTools({ command }, makeCtx(fixture)), undefined);
+		} finally {
+			cleanupFixture(fixture);
+		}
+	});
+
+	test("handler: project-local rm still blocks project .env", async () => {
+		const fixture = createFixture();
+		try {
+			initSession(fixture);
+			const result = await handleBashTools({ command: "rm -f .env" }, makeCtx(fixture));
+			assert.ok(result?.block);
+			assert.match(result!.reason, /blacklisted path/i);
 		} finally {
 			cleanupFixture(fixture);
 		}

@@ -337,3 +337,62 @@ export const findBlacklistedPathInCommand = (command: string, cwd: string): stri
 	}
 	return null;
 };
+
+const DELETION_COMMAND_NAMES = new Set(["rm", "rmdir", "unlink", "shred"]);
+
+/**
+ * Extract explicit targets of direct filesystem deletion commands.
+ * Unlike the general path heuristic, bare names are targets here because
+ * `rm -rf build` is unambiguously a path operand.
+ */
+export const extractDestructivePathsFromCommand = (command: string, cwd: string): string[] => {
+	const paths: string[] = [];
+	let currentCwd = resolve(cwd);
+
+	for (const line of command.replace(/\r\n?/g, "\n").split("\n")) {
+		let commandName: string | null = null;
+		let commandArgs: string[] = [];
+		let options = true;
+
+		const finishCommand = (): void => {
+			if (commandName === "cd" && commandArgs.length === 1) {
+				currentCwd = resolve(currentCwd, expandTilde(commandArgs[0]));
+			}
+			commandName = null;
+			commandArgs = [];
+			options = true;
+		};
+
+		for (const token of tokenizeLine(line)) {
+			if (token.type === "operator") {
+				if (COMMAND_SEPARATORS.has(token.value)) finishCommand();
+				continue;
+			}
+
+			const raw = token.value.trim();
+			if (!raw) continue;
+			if (commandName === null) {
+				commandName = raw;
+				continue;
+			}
+
+			if (commandName === "cd") {
+				commandArgs.push(raw);
+				continue;
+			}
+			if (!DELETION_COMMAND_NAMES.has(commandName) && !commandName.endsWith("/rm")) {
+				continue;
+			}
+			if (raw === "--") {
+				options = false;
+				continue;
+			}
+			if (options && raw.startsWith("-")) continue;
+			if (raw.startsWith("$") || raw.includes("$(") || raw.includes("`")) continue;
+
+			paths.push(resolve(currentCwd, expandTilde(raw)));
+		}
+		finishCommand();
+	}
+	return paths;
+};

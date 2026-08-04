@@ -12,14 +12,22 @@ export function escapeRegExp(s: string): string {
 	return s.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
 }
 
+// Deletion operations that may be allowed when their targets are strictly inside
+// the project. Other dangerous operations still require their normal safeguards.
+export const projectLocalDeletionPatterns = [
+	/\brm\s+(-[rRfFoOpPsuUz]*[rRfFoOpPsuUz]*)/i,
+	/\brm\s+--recursive\b/i,
+	/\brm\s+--force\b/i,
+	/\bunlink\s+/i,
+	/\brmdir\s+/i,
+	/\brm\s+\*[rRfFoPoU]*\b/i,
+	/\brm\s+\*\/\*[rRfFoPoU]*\b/i,
+	/\bshred\s+/i,
+];
+
 // ===== PRIORITY 1: DevOps Infrastructure Patterns =====
 export const dangerousBashPatterns = [
-	// rm command variations - deletion flags in ANY order
-	/\brm\s+(-[rRfFoOpPsuUz]*[rRfFoOpPsuUz]*)/i, // rm -rf, -fr, -fF
-	/\brm\s+--recursive\b/i, // rm --recursive
-	/\brm\s+--force\b/i, // rm --force
-	/\bunlink\s+/i, // unlink file
-	/\brmdir\s+/i, // rmdir directory
+	...projectLocalDeletionPatterns,
 	/\bfind\s+.*-exec\s+rm\s+/i, // find ... -exec rm
 	/\bfind\s+.*-exec\s+-\w+r/i, // find ... -exec rm -rf
 	/\bxargs\s+rm\b/i, // xargs rm (narrowed: only xargs rm, not all xargs)
@@ -34,10 +42,7 @@ export const dangerousBashPatterns = [
 	/\bbash\s+-c\s+.*rm\s+-[rRfF]/i, // bash -c "rm -r"
 	/\bsudo\s+.*\brm\s+-[rRfF]/i, // sudo rm -rf
 	/\bfind\s+.*-delete\b/i, // find ... -delete
-	/\brm\s+\*[rRfFoPoU]*\b/i, // rm *
-	/\brm\s+\*\/\*[rRfFoPoU]*\b/i, // rm */*
 	/\bexec\s+rm\s+/i, // exec rm
-	/\bshred\s+/i, // shred (secure delete)
 	/\bwipefs\s+/i, // wipefs (wipe filesystem)
 	/:\s*\(\s*\)\s*\{.*:\s*\|.*.*&.*\}/, // fork bomb: :(){ :|:& };:
 	/>\s*\/dev\/(sd[a-z]|nvme\d|hd[a-z])\b/i, // redirect to raw disk device

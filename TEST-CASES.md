@@ -639,6 +639,16 @@
 - **Action:** Execute `bash` command `rm -rf /tmp/x`.
 - **Expected:** Immediately blocked.
 
+### TC-BASH-DANGER-06A: Project-Local Deletion Is Allowed
+- **Context:** `ctx.hasUI = false`, cwd is project root.
+- **Action:** Execute `bash` command `cd tekton-cicd && rm -f src/k8s-io/services/k8s-io.service.js && npm run build 2>&1 && npm test -- k8s-io --runInBand`.
+- **Expected:** The command is allowed without confirmation because the deletion target resolves inside the project, including after the `cd`.
+
+### TC-BASH-DANGER-06B: Project-Local Sensitive Deletion Remains Blocked
+- **Context:** Project `.env` blacklist is active.
+- **Action:** Execute `bash` command `rm -f .env`.
+- **Expected:** The command is blocked immediately as a blacklisted path, without confirmation.
+
 ### TC-BASH-DANGER-07: Dangerous Command Interactive Approve/Reject
 - **Context:** Interactive session.
 - **Action:** Execute `bash` command `helm uninstall rel`.

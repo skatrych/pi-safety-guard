@@ -3,8 +3,18 @@ import { existsSync, readFileSync as fsReadFileSync } from "node:fs";
 import { join, resolve, dirname, sep, relative } from "node:path";
 import { state } from "./state";
 import { sanitizeCommand, hasPathTraversal, expandTilde } from "./utils";
-import { dangerousBashPatterns, BLACKLIST, WHITELIST, escapeRegExp } from "./constants";
-import { checkPathSecurity, extractPathsFromCommand } from "./security";
+import {
+	dangerousBashPatterns,
+	projectLocalDeletionPatterns,
+	BLACKLIST,
+	WHITELIST,
+	escapeRegExp,
+} from "./constants";
+import {
+	checkPathSecurity,
+	extractDestructivePathsFromCommand,
+	extractPathsFromCommand,
+} from "./security";
 import { validateConfig } from "./config";
 import { appendSecurityPolicy } from "./prompt";
 import { discoverNodeModules } from "./node-modules";
@@ -143,6 +153,41 @@ const findPass1OffendingPath = (command: string, cwd: string): string | null => 
 };
 
 /**
+ * Allow direct deletion commands when every known target is a project descendant.
+ * Sensitive paths remain protected, including project .env files. Unknown shell
+ * expansions and hidden-file globs are kept on the normal confirmation path.
+ */
+const isProjectLocalDeletion = (command: string, cwd: string): boolean => {
+	if (!projectLocalDeletionPatterns.some((pattern) => pattern.test(command))) {
+		return false;
+	}
+	if (command.includes("$") || command.includes("`")) {
+		return false;
+	}
+	if (/(^|[\s/])\.[^/\s]*\*/.test(command)) {
+		return false;
+	}
+	if (
+		dangerousBashPatterns.some(
+			(pattern) => !projectLocalDeletionPatterns.includes(pattern) && pattern.test(command)
+		)
+	) {
+		return false;
+	}
+
+	const targets = extractDestructivePathsFromCommand(command, cwd);
+	const projectPrefix = cwd.endsWith(sep) ? cwd : cwd + sep;
+	if (targets.length === 0) return false;
+
+	const projectEnv = new RegExp(`^${escapeRegExp(cwd)}/(?:.+/)?\\.env(?:$|\\.)`);
+	return targets.every((target) => {
+		if (!target.startsWith(projectPrefix) || target === cwd) return false;
+		if (projectEnv.test(target)) return false;
+		return !STATIC_BLACKLIST.some((pattern) => pattern.test(target));
+	});
+};
+
+/**
  * Handle bash tool calls.
  */
 export const handleBashTools = async (
@@ -155,11 +200,13 @@ export const handleBashTools = async (
 
 	const command = sanitizeCommand(input.command);
 	const effectiveCwd = resolve(ctx.cwd || process.cwd());
+	const allowProjectDeletion = isProjectLocalDeletion(command, effectiveCwd);
 
 	// ── Pass 1: Blacklisted path detection — unconditional block ─────────────
-	// Exception: exact discovered node_modules roots only when used as -path … -prune.
+	// Exceptions: exact discovered node_modules roots used as prune operands, or
+	// as targets of an otherwise safe project-local deletion.
 	const offendingPath = findPass1OffendingPath(command, effectiveCwd);
-	if (offendingPath !== null) {
+	if (offendingPath !== null && !allowProjectDeletion) {
 		console.log(
 			`[safety-guard] BLOCKED bash access to blacklisted path: ${offendingPath}`
 		);
@@ -180,6 +227,11 @@ export const handleBashTools = async (
 			block: true,
 			reason: "Project-root find requires explicit node_modules exclusion",
 		};
+	}
+
+	if (allowProjectDeletion) {
+		console.log(`[safety-guard] ALLOWED project-local deletion: ${command}`);
+		return undefined;
 	}
 
 	// ── Pass 3: Destructive pattern check ────────────────────────────────────
