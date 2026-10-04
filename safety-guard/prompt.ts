@@ -1,3 +1,5 @@
+import { state } from "./state";
+
 /**
 * Append security policy to the system prompt.
 */
@@ -10,14 +12,8 @@ export const appendSecurityPolicy = (systemPrompt: string): string => {
 You must NEVER read, write, execute, or reference the contents of these paths.
 Do not write scripts or code that access them either directly or indirectly:
 
-- ~/.ssh/ and any files within it
-- ~/.aws/credentials
-- ~/.kube/ and any files within it  
-- ~/.gnupg/ and any files within it
-- ~/.gitconfig
-- ~/.env and ~/.env.* (in home directory or anywhere in the project)
+${state.blockedPaths.map((path) => `- ${path} (including descendants; * matches within a path segment)`).join("\n")}
 - Any .env or .env.* file anywhere in the project tree
-- /etc/, /usr/, /System/
 
 If a task appears to require access to these paths, STOP and ask the user
 to provide only the specific values needed rather than reading the files directly.

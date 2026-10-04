@@ -1,4 +1,6 @@
 import { homedir } from "node:os";
+import { join, resolve, sep } from "node:path";
+import defaultBlockedPaths from "./blocked-paths.defaults.json" with { type: "json" };
 
 // Cached home directory for consistent path expansion (no hardcoded paths)
 export const HOME_DIR = homedir();
@@ -104,25 +106,22 @@ export const COMMAND_NAME_TOKENS = new Set([
 // BLACKLIST has HIGHEST priority - evaluated FIRST
 // WHITELIST has LOWER priority - evaluated SECOND
 
-// Blacklisted paths (credentials/confidential data)
-export const BLACKLIST: RegExp[] = [
-	new RegExp(`^${escapeRegExp(HOME_DIR)}/\\.pi/agent/auth\\.json`), // Models credentials
-	new RegExp(`^${escapeRegExp(HOME_DIR)}/\\.pi/agent/sessions(?:/|$)`), // Agent session transcripts
-	new RegExp(`^${escapeRegExp(HOME_DIR)}/\\.claude/sessions(?:/|$)`), // Claude session transcripts
-	new RegExp(`^${escapeRegExp(HOME_DIR)}/\\.ssh/`), // SSH credentials
-	new RegExp(`^${escapeRegExp(HOME_DIR)}/\\.cursor/`), // Cursor IDE credentials
-	new RegExp(`^${escapeRegExp(HOME_DIR)}/\\.gnupg/`), // GPG credentials
-	new RegExp(`^${escapeRegExp(HOME_DIR)}/Library/Keychains/`), // macOS Keychain
-	new RegExp(`^${escapeRegExp(HOME_DIR)}/\\.aws/credentials`), // AWS credentials file
-	new RegExp(`^${escapeRegExp(HOME_DIR)}/\\.kube/`), // Kubernetes credentials
-	new RegExp(`^${escapeRegExp(HOME_DIR)}/Pictures/Photos Library\\.photoslibrary/`), // Photos library (confidential)
-	new RegExp(`^${escapeRegExp(HOME_DIR)}/\\.env$`), // ~/.env (home-level secrets)
-	new RegExp(`^${escapeRegExp(HOME_DIR)}/\\.env\\.`), // ~/.env.* (e.g. ~/.env.local)
-	new RegExp(`^${escapeRegExp(HOME_DIR)}/\\.gitconfig$`), // ~/.gitconfig (name, email, tokens)
-	new RegExp(`^/etc/`), // System configs
-	new RegExp(`^/usr/`), // System directories
-	new RegExp(`^/System/`), // macOS System
-];
+// Defaults are data, not host-specific rules embedded in the extension code.
+export const DEFAULT_BLOCKED_PATHS: string[] = defaultBlockedPaths;
+
+/** Compile boundary-safe paths; * matches characters within one path segment. */
+export const compileBlockedPaths = (paths: string[], cwd = process.cwd()): RegExp[] => {
+	const separator = escapeRegExp(sep);
+	return paths.map((path) => {
+		const expanded = path.startsWith("~/") || path === "~" ? join(HOME_DIR, path.slice(1)) : path;
+		const normalized = resolve(cwd, expanded);
+		const pattern = normalized.split("*").map(escapeRegExp).join(`[^${separator}]*`);
+		return new RegExp(`^${pattern}${normalized.endsWith(sep) ? "" : `(?:${separator}|$)`}`);
+	});
+};
+
+// Mutable session blacklist (configured paths plus project-specific safeguards).
+export const BLACKLIST: RegExp[] = compileBlockedPaths(DEFAULT_BLOCKED_PATHS);
 
 // Whitelisted paths (safe explicit directories)
 export const WHITELIST: RegExp[] = [

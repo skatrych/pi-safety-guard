@@ -14,6 +14,20 @@ Automated in `safety-guard/handlers.test.ts`:
 - Reload/session initialization with missing, invalid, or malformed configuration resets a previous opt-in. Project `.env` protection remains installed.
 - Malformed global settings leave gates off without preventing initialization.
 
+## Configurable Blocked-Path Regression Cases
+
+Automated in `safety-guard/handlers.test.ts`:
+
+- `extensions.blockedPaths` accepts an empty list or non-empty path strings; non-arrays, non-strings, empty/blank strings, and control characters are rejected.
+- Relative, absolute, and tilde paths block `bash`, `read`, `write`, and `edit`, both with gates enabled/disabled and with/without UI. No confirmation or rejection notification occurs, even for whitelisted paths.
+- Directories match the exact root and descendants, including trailing-slash inputs, but not siblings with similar prefixes. Regex metacharacters remain literal; `*` matches within a single path segment.
+- Global Pi settings (respecting `PI_CODING_AGENT_DIR`) supply the host list even when project settings omit the key. Explicit project lists replace it; `[]` removes host/default rules but retains project `.env` protection.
+- Missing, invalid, or malformed project settings reset old project rules to the host policy. Malformed global settings restore bundled defaults.
+- Prompt text uses the effective list instead of fixed host-specific paths.
+- Project-local deletion and `node_modules` prune exceptions never override explicitly configured blocked paths.
+
+The path-family cases below assume the bundled default policy unless they specify a custom list.
+
 ## 1. Lifecycle and Tool Dispatch
 
 ### TC-LIFE-01: Pre-Initialization Block

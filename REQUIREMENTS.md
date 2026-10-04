@@ -45,8 +45,7 @@ Before configuration has finished loading during `session_start`, all monitored 
 On `session_start`, the extension:
 - determines effective current working directory (`resolve(ctx.cwd || process.cwd())`)
 - discovers confirmed `node_modules` directories once (see section 6.6)
-- appends security policy text to `ctx.systemPrompt` if present
-- appends security policy text to `ctx.aiSystemMessage` if present
+- loads the host-level blocked-path policy (or bundled defaults)
 - attempts to load configuration
 - validates configuration
 - merges base allowed paths with configured allowed paths
@@ -54,6 +53,7 @@ On `session_start`, the extension:
 - rebuilds runtime whitelist regexes
 - appends project-specific `.env` blacklist entries and discovered `node_modules` paths
 - marks configuration as loaded
+- appends security policy text using the effective blocked paths to `ctx.systemPrompt` and `ctx.aiSystemMessage` if present
 
 ## 5. Configuration Behavior
 
@@ -65,11 +65,14 @@ Configuration is loaded from the first existing file in this order:
 
 This existing lookup remains unchanged for allowed paths and notifications.
 
-For the approval toggle only, an explicit value in the selected config takes precedence. If omitted, the toggle is read from Pi's global `~/.pi/agent/settings.json` (or `<PI_CODING_AGENT_DIR>/settings.json` when overridden). A project settings file that omits the toggle therefore inherits the global toggle. Invalid selected configuration or a parse/load failure leaves gates off.
+For blocked paths, `extensions.blockedPaths` in the selected config replaces the host list. When omitted, the list is inherited from Pi's global `~/.pi/agent/settings.json` (or `<PI_CODING_AGENT_DIR>/settings.json`). When neither config specifies a list, `safety-guard/blocked-paths.defaults.json` supplies backward-compatible defaults. Invalid selected configuration or a parse/load failure retains the host policy; missing/invalid global settings use bundled defaults.
+
+For the approval toggle, an explicit value in the selected config takes precedence. If omitted, the toggle is read from Pi's global `~/.pi/agent/settings.json` (or `<PI_CODING_AGENT_DIR>/settings.json` when overridden). A project settings file that omits the toggle therefore inherits the global toggle. Invalid selected configuration or a parse/load failure leaves gates off.
 
 ### 5.2. Supported config keys
 The extension reads these exact keys:
 - `extensions.allowedPaths`
+- `extensions.blockedPaths` — array of path strings; explicit `[]` disables the host/default list, not project `.env` or `node_modules` safeguards
 - `extensions.notificationsEnabled`
 - `extensions.permissionGatesEnabled` — boolean or `"on"`/`"off"`; default `false`
 
@@ -83,6 +86,21 @@ These are literal dotted JSON keys, not nested objects. Enable approval gates in
 
 `"on"` also enables gates; `false`, `"off"`, or no setting disables them. Changes apply at session start or `/reload`. This toggle affects dangerous bash command approval and non-whitelisted `read`/`write`/`edit` approval only; protected paths still block without asking the user.
 
+For a host-specific policy, add this literal dotted key to `~/.pi/agent/settings.json` (merge it with existing settings):
+
+```json
+{
+  "extensions.blockedPaths": [
+    "~/.ssh",
+    "~/.aws/credentials",
+    "/srv/private",
+    "~/secrets/.env.*"
+  ]
+}
+```
+
+A configured list **replaces**, rather than extends, the defaults; include every path you want protected. Paths support `~` expansion, absolute paths, and relative paths resolved against the session project directory. Each entry matches the path itself and all descendants, with or without a trailing slash, but not similarly named siblings. `*` matches zero or more characters within a single path segment; other characters are literal (not regex syntax). No filesystem existence check is required. Changes apply at session start or `/reload`. Blacklist priority, silent blocking, and no-user-override semantics are unchanged.
+
 ### 5.3. Validation rules
 Configuration validation enforces:
 - config must be an object
@@ -90,6 +108,8 @@ Configuration validation enforces:
 - config must not be an array
 - `extensions.allowedPaths`, if present, must be an array
 - every element of `extensions.allowedPaths`, if present, must be a string
+- `extensions.blockedPaths`, if present, must be an array of non-empty, non-whitespace-only strings without control characters
+- blocked paths reset to the host policy before every load; project rules never leak between sessions
 - `extensions.notificationsEnabled`, if present, must be a boolean
 - `extensions.permissionGatesEnabled`, if present, must be a boolean or exactly `"on"`/`"off"`; strings `"true"`/`"false"`, numbers, and other values are invalid
 - the permission toggle is reset to `false` before every session configuration load, preventing stale opt-in
@@ -115,8 +135,11 @@ If config loading or parsing throws an error:
 
 ## 6. Path Security Model
 
-### 6.1. Hardcoded blacklist entries
-The extension hardcodes protection for these path families:
+### 6.1. Configurable blacklist entries
+The host-specific blacklist is configuration data, not a hardcoded list in TypeScript or the prompt. `blocked-paths.defaults.json` provides these defaults when `extensions.blockedPaths` is omitted:
+- `~/.pi/agent/sessions`
+- `~/.claude/sessions`
+- `~/.cursor/`
 - `~/.pi/agent/auth.json`
 - `~/.ssh/`
 - `~/.gnupg/`
@@ -131,7 +154,7 @@ The extension hardcodes protection for these path families:
 - `/usr/`
 - `/System/`
 
-These blacklist entries are compiled using escaped home-directory-based regexes where relevant.
+Effective entries are tilde-expanded, resolved against the project directory, and compiled into escaped, boundary-safe regexes with single-segment `*` wildcard support.
 
 ### 6.2. Base whitelist entries
 The runtime whitelist always includes these base path families:
@@ -155,7 +178,7 @@ Tilde handling:
 The exported `WHITELIST` array is mutable and is fully rebuilt during each `session_start` based on merged allowed paths.
 
 ### 6.5. Runtime blacklist management
-The exported `BLACKLIST` array is mutable. At each `session_start`, it is reset to the base hardcoded blacklist entries and then augmented with project-specific `.env` entries for the current working directory and boundary-safe regexes for each discovered `node_modules` path. This ensures that blacklist entries from previous sessions do not accumulate.
+The exported `BLACKLIST` array is mutable. At each `session_start`, it is reset to the effective configured blocked-path entries and then augmented with project-specific `.env` entries for the current working directory and boundary-safe regexes for each discovered `node_modules` path. This ensures that blacklist entries from previous sessions do not accumulate.
 
 ### 6.6. Bounded `node_modules` discovery
 At the beginning of each `session_start`, before configuration loading can fail, the extension performs one bounded filesystem discovery:
@@ -266,7 +289,7 @@ The extension detects representative destructive or risky command families inclu
 For bash commands, the extension evaluates in this fixed order:
 1. **Blacklist path detection** — if any extracted path argument matches the blacklist, the command is blocked immediately, regardless of whether the command is also dangerous. No user override is possible, except that an exact discovered `node_modules` root may be a target of an otherwise-qualified project-local deletion. Exact discovered `node_modules` roots are also skipped when they appear as `-path <root> -prune` operands (Pass 1 carve-out).
 2. **Conditional project-root `find` guard (Pass 2)** — when CWD-tree `node_modules` was discovered at session start, blocks unexcluded `find` rooted at `.`, `./`, the CWD, or the CWD with a trailing separator. Unexcluded `rg` / recursive `grep` are not gated. Skipped when no CWD-tree install was discovered or when an accepted find exclusion referencing a discovered root is present.
-3. **Project-local deletion allowance** — a direct filesystem deletion command (`rm`, `unlink`, `rmdir`, or `shred`) is allowed without confirmation when all explicit targets resolve strictly inside the project directory. This allowance supports command chains that first `cd` into a project subdirectory. Sensitive paths, including project `.env` files and static blacklist entries, remain blocked; unknown shell expansions and hidden-file globs do not qualify.
+3. **Project-local deletion allowance** — a direct filesystem deletion command (`rm`, `unlink`, `rmdir`, or `shred`) is allowed without confirmation when all explicit targets resolve strictly inside the project directory. This allowance supports command chains that first `cd` into a project subdirectory. Sensitive paths, including project `.env` files and configured blocked paths, remain blocked; unknown shell expansions and hidden-file globs do not qualify.
 4. **Dangerous pattern detection** — only reached if no blacklisted path was found, Pass 2 did not block, and the project-local deletion allowance did not apply. This check is skipped when permission gates are off. When enabled and a dangerous pattern is detected, user confirmation is required to proceed. Blocked if confirmation cannot be obtained.
 
 The whitelist is intentionally not consulted for bash commands. Any bash command that passes all checks above is allowed to proceed regardless of whether its path arguments are whitelisted.
@@ -347,6 +370,8 @@ The appended policy communicates restrictions around:
 - Kubernetes secrets
 
 ### 11.4. Prompt-policy alignment
+The prompt lists the effective configured blocked paths, not a separate hardcoded list. Replacing or emptying the configured list also updates the prompt; project `.env` protection remains described independently.
+
 Blacklisted path access is strictly enforced at runtime: it is blocked immediately with no user override, matching the prompt policy claim that these restrictions cannot be bypassed.
 
 Dangerous bash commands that do not target a blacklisted path are allowed without prompting when permission gates are off. When gates are enabled, interactive user approval is required. The path restrictions in the prompt remain unconditional.

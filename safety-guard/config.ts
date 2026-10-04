@@ -2,16 +2,19 @@ import { existsSync, readFileSync } from "node:fs";
 import { homedir } from "node:os";
 import { join } from "node:path";
 import { expandTilde } from "./utils";
+import { DEFAULT_BLOCKED_PATHS } from "./constants";
 
 /**
  * Validate config schema:
  * - allowedPaths must be array of strings
+ * - blockedPaths must be array of non-empty strings without control characters
  * - notificationsEnabled must be boolean (strict type check)
  * - permissionGatesEnabled must be boolean or "on"/"off"
  */
 export const validateConfig = (config: unknown): {
 	valid: true;
 	allowedPaths?: string[];
+	blockedPaths?: string[];
 	notificationsEnabled?: boolean;
 	permissionGatesEnabled?: boolean;
 } | { valid: false; errors: string[] } => {
@@ -31,6 +34,18 @@ export const validateConfig = (config: unknown): {
 			if (invalidPaths.length > 0) {
 				errors.push(`allowedPaths contains non-string values: ${JSON.stringify(invalidPaths)}`);
 			}
+		}
+	}
+
+	const blockedPathsRaw = (config as Record<string, unknown>)["extensions.blockedPaths"];
+	if (blockedPathsRaw !== undefined) {
+		if (!Array.isArray(blockedPathsRaw)) {
+			errors.push("blockedPaths must be an array");
+		} else if (blockedPathsRaw.some((path) =>
+			typeof path !== "string" || path.trim().length === 0 ||
+			Array.from(path).some((char) => char.charCodeAt(0) <= 0x1F || char.charCodeAt(0) === 0x7F)
+		)) {
+			errors.push("blockedPaths must contain non-empty strings without control characters");
 		}
 	}
 
@@ -56,6 +71,7 @@ export const validateConfig = (config: unknown): {
 	return {
 		valid: true,
 		allowedPaths: Array.isArray(allowedPathsRaw) ? (allowedPathsRaw as string[]) : undefined,
+		blockedPaths: Array.isArray(blockedPathsRaw) ? (blockedPathsRaw as string[]) : undefined,
 		permissionGatesEnabled: permissionGatesRaw === undefined ?
 			undefined : permissionGatesRaw === true || permissionGatesRaw === "on",
 		notificationsEnabled:
@@ -65,20 +81,28 @@ export const validateConfig = (config: unknown): {
 	};
 };
 
-/** Read only the approval toggle from Pi's global settings; leave path configuration lookup unchanged. */
-export const loadGlobalPermissionGatesEnabled = (): boolean => {
+/** Read host settings without changing the legacy allowed-path/notification lookup. */
+const loadGlobalConfig = (): Extract<ReturnType<typeof validateConfig>, { valid: true }> | undefined => {
 	const agentDir = expandTilde(process.env.PI_CODING_AGENT_DIR || join(homedir(), ".pi", "agent"));
 	const settingsPath = join(agentDir, "settings.json");
 	try {
-		if (!existsSync(settingsPath)) return false;
+		if (!existsSync(settingsPath)) return undefined;
 		const validation = validateConfig(JSON.parse(readFileSync(settingsPath, "utf8")));
 		if (!validation.valid) {
 			console.error(`[safety-guard] Global config validation failed: ${validation.errors.join(", ")}`);
-			return false;
+			return undefined;
 		}
-		return validation.permissionGatesEnabled ?? false;
+		return validation;
 	} catch (error: unknown) {
-		console.error("[safety-guard] Global permission gate setting load failed", error);
-		return false;
+		console.error("[safety-guard] Global settings load failed", error);
+		return undefined;
 	}
+};
+
+export const loadGlobalPermissionGatesEnabled = (): boolean => {
+	return loadGlobalConfig()?.permissionGatesEnabled ?? false;
+};
+
+export const loadGlobalBlockedPaths = (): string[] => {
+	return loadGlobalConfig()?.blockedPaths ?? [...DEFAULT_BLOCKED_PATHS];
 };

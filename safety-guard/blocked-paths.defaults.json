@@ -1,0 +1,18 @@
+[
+  "~/.pi/agent/auth.json",
+  "~/.pi/agent/sessions",
+  "~/.claude/sessions",
+  "~/.ssh",
+  "~/.cursor",
+  "~/.gnupg",
+  "~/Library/Keychains",
+  "~/.aws/credentials",
+  "~/.kube",
+  "~/Pictures/Photos Library.photoslibrary",
+  "~/.env",
+  "~/.env.*",
+  "~/.gitconfig",
+  "/etc",
+  "/usr",
+  "/System"
+]

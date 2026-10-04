@@ -9,17 +9,17 @@ import {
 	BLACKLIST,
 	WHITELIST,
 	escapeRegExp,
+	compileBlockedPaths,
 } from "./constants";
 import {
 	checkPathSecurity,
 	extractDestructivePathsFromCommand,
 	extractPathsFromCommand,
 } from "./security";
-import { validateConfig, loadGlobalPermissionGatesEnabled } from "./config";
+import { validateConfig, loadGlobalPermissionGatesEnabled, loadGlobalBlockedPaths } from "./config";
 import { appendSecurityPolicy } from "./prompt";
 import { discoverNodeModules } from "./node-modules";
 
-const STATIC_BLACKLIST = [...BLACKLIST];
 const STATIC_WHITELIST = [...WHITELIST];
 
 const stripTrailingSep = (path: string): string => {
@@ -104,7 +104,9 @@ const rebuildSessionBlacklist = (
 	nodeModulesPaths: string[]
 ): void => {
 	BLACKLIST.length = 0;
-	BLACKLIST.push(...STATIC_BLACKLIST);
+	state.blockedPaths = state.blockedPaths.map((path) => resolve(cwd, expandTilde(path)));
+	state.blockedPathPatterns = compileBlockedPaths(state.blockedPaths, cwd);
+	BLACKLIST.push(...state.blockedPathPatterns);
 
 	const cwdEscaped = escapeRegExp(cwd);
 	BLACKLIST.push(
@@ -135,16 +137,21 @@ const isUnderDiscoveredNodeModules = (resolvedPath: string): boolean => {
 
 /**
  * Pass 1: first blacklisted path in the command.
- * Exact discovered node_modules roots are ignored only when they appear as
- * `-path <root> -prune` operands (not merely because some exclusion flag exists).
+ * Exact discovered node_modules roots may be prune operands or safe local deletion
+ * targets. Neither exception overrides an explicitly configured blocked path.
  */
-const findPass1OffendingPath = (command: string, cwd: string): string | null => {
+const findPass1OffendingPath = (command: string, cwd: string, allowProjectDeletion: boolean): string | null => {
 	const prunedRoots = prunedDiscoveredRoots(command, cwd);
-	for (const path of extractPathsFromCommand(command, cwd)) {
+	const roots = discoveredRootSet();
+	const paths = [...extractPathsFromCommand(command, cwd), ...extractDestructivePathsFromCommand(command, cwd)];
+	for (const path of paths) {
 		if (!BLACKLIST.some((bl) => bl.test(path))) {
 			continue;
 		}
-		if (prunedRoots.has(stripTrailingSep(path))) {
+		if (
+			!state.blockedPathPatterns.some((pattern) => pattern.test(path)) &&
+			(prunedRoots.has(stripTrailingSep(path)) || (allowProjectDeletion && roots.has(stripTrailingSep(path))))
+		) {
 			continue;
 		}
 		return path;
@@ -183,7 +190,7 @@ const isProjectLocalDeletion = (command: string, cwd: string): boolean => {
 	return targets.every((target) => {
 		if (!target.startsWith(projectPrefix) || target === cwd) return false;
 		if (projectEnv.test(target)) return false;
-		return !STATIC_BLACKLIST.some((pattern) => pattern.test(target));
+		return !state.blockedPathPatterns.some((pattern) => pattern.test(target));
 	});
 };
 
@@ -205,8 +212,8 @@ export const handleBashTools = async (
 	// ── Pass 1: Blacklisted path detection — unconditional block ─────────────
 	// Exceptions: exact discovered node_modules roots used as prune operands, or
 	// as targets of an otherwise safe project-local deletion.
-	const offendingPath = findPass1OffendingPath(command, effectiveCwd);
-	if (offendingPath !== null && !allowProjectDeletion) {
+	const offendingPath = findPass1OffendingPath(command, effectiveCwd, allowProjectDeletion);
+	if (offendingPath !== null) {
 		console.log(
 			`[safety-guard] BLOCKED bash access to blacklisted path: ${offendingPath}`
 		);
@@ -380,6 +387,7 @@ export const handleToolCall = async (event: ToolCallEvent, ctx: ExtensionContext
 export const onSessionStart = (event: SessionStartEvent, ctx: ExtensionContext) => {
 	// Never carry an opt-in across sessions or failed config loads.
 	state.permissionGatesEnabled = false;
+	state.blockedPaths = loadGlobalBlockedPaths();
 	const effectiveCwd = resolve(ctx.cwd || process.cwd());
 	const nodeModulesDiscovery = discoverNodeModules(effectiveCwd);
 
@@ -392,14 +400,6 @@ export const onSessionStart = (event: SessionStartEvent, ctx: ExtensionContext) 
 	);
 
 	try {
-		// Append security policy to system prompt
-		if (ctx.systemPrompt) {
-			ctx.systemPrompt = appendSecurityPolicy(ctx.systemPrompt);
-		}
-		if (ctx.aiSystemMessage) {
-			ctx.aiSystemMessage = appendSecurityPolicy(ctx.aiSystemMessage);
-		}
-
 		let config: Record<string, unknown> | null = null;
 
 		// Priority 1: Project-local config
@@ -433,6 +433,9 @@ export const onSessionStart = (event: SessionStartEvent, ctx: ExtensionContext) 
 			if (!validation.valid) {
 				console.error(`[safety-guard] Config validation failed: ${validation.errors.join(", ")}`);
 			} else {
+				if (validation.blockedPaths !== undefined) {
+					state.blockedPaths = validation.blockedPaths;
+				}
 				if (validation.allowedPaths) {
 					state.allowedPaths = validation.allowedPaths.map(expandTilde);
 				}
@@ -482,5 +485,13 @@ export const onSessionStart = (event: SessionStartEvent, ctx: ExtensionContext) 
 		}
 		rebuildSessionBlacklist(fallbackCwd, nodeModulesDiscovery.paths);
 		state.configLoaded = true;
+	}
+
+	// Render the effective policy only after host/project settings have loaded.
+	if (ctx.systemPrompt) {
+		ctx.systemPrompt = appendSecurityPolicy(ctx.systemPrompt);
+	}
+	if (ctx.aiSystemMessage) {
+		ctx.aiSystemMessage = appendSecurityPolicy(ctx.aiSystemMessage);
 	}
 };

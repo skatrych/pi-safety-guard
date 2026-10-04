@@ -209,6 +209,11 @@ const resolvePathCandidate = (token: string, cwd: string): string | null => {
 	if (isLikelyBarePathToken(token)) {
 		return resolve(cwd, token);
 	}
+	// Configured directories may be bare names without a slash or extension.
+	const candidate = resolve(cwd, token);
+	if (/^[\w+.-]+$/.test(token) && BLACKLIST.some((pattern) => pattern.test(candidate))) {
+		return candidate;
+	}
 	return null;
 };
 

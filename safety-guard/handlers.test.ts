@@ -12,7 +12,8 @@ import { tmpdir } from "node:os";
 import { discoverNodeModules } from "./node-modules";
 import { handleBashTools, handleFileIOTools, onSessionStart } from "./handlers";
 import { state } from "./state";
-import { BLACKLIST, WHITELIST } from "./constants";
+import { BLACKLIST, WHITELIST, HOME_DIR } from "./constants";
+import { appendSecurityPolicy } from "./prompt";
 import { checkPathSecurity } from "./security";
 import { validateConfig } from "./config";
 
@@ -36,6 +37,8 @@ const makeCtx = (cwd: string): MockCtx => ({
 } as MockCtx);
 
 type StateSnapshot = {
+	blockedPaths: string[];
+	blockedPathPatterns: RegExp[];
 	allowedPaths: string[];
 	notificationsEnabled: boolean;
 	permissionGatesEnabled: boolean;
@@ -49,6 +52,8 @@ type StateSnapshot = {
 let stateSnapshot: StateSnapshot;
 
 const captureState = (): StateSnapshot => ({
+	blockedPaths: [...state.blockedPaths],
+	blockedPathPatterns: [...state.blockedPathPatterns],
 	allowedPaths: [...state.allowedPaths],
 	notificationsEnabled: state.notificationsEnabled,
 	permissionGatesEnabled: state.permissionGatesEnabled,
@@ -60,6 +65,8 @@ const captureState = (): StateSnapshot => ({
 });
 
 const restoreState = (snap: StateSnapshot): void => {
+	state.blockedPaths = snap.blockedPaths;
+	state.blockedPathPatterns = snap.blockedPathPatterns;
 	state.allowedPaths = snap.allowedPaths;
 	state.notificationsEnabled = snap.notificationsEnabled;
 	state.permissionGatesEnabled = snap.permissionGatesEnabled;
@@ -80,6 +87,17 @@ test("config: permission gates only accept booleans and on/off strings", () => {
 	}
 	for (const value of [1, 0, null, "true", "false", "ON", [], {}]) {
 		assert.equal(validateConfig({ "extensions.permissionGatesEnabled": value }).valid, false);
+	}
+});
+
+test("config: blocked paths require non-empty strings without control characters", () => {
+	for (const value of [[], ["~/private", "/host/secrets.json", "private/.env.*"]]) {
+		const result = validateConfig({ "extensions.blockedPaths": value });
+		assert.equal(result.valid, true);
+		if (result.valid) assert.deepEqual(result.blockedPaths, value);
+	}
+	for (const value of [null, "~/private", {}, [1], [null], [""], ["   "], ["secret\u0000"], ["secret\nfile"]]) {
+		assert.equal(validateConfig({ "extensions.blockedPaths": value }).valid, false);
 	}
 });
 
@@ -237,6 +255,161 @@ describe("handler integration", { concurrency: false }, () => {
 		mkdirSync(dir, { recursive: true });
 		writeFileSync(join(dir, "settings.json"), JSON.stringify(config));
 	};
+
+	for (const enabled of [false, true]) {
+		test(`blocked paths: configured files and directories block silently (gates=${enabled})`, async () => {
+			const fixture = createFixture();
+			try {
+				writeSettings(join(fixture, ".pi"), {
+					"extensions.blockedPaths": ["private+data/", "secrets.json", "~/host-private", "private/.token.*"],
+					"extensions.allowedPaths": [fixture, "~/host-private"],
+					"extensions.permissionGatesEnabled": enabled,
+				});
+				initSession(fixture);
+				for (const hasUI of [false, true]) {
+					const ctx = makeCtx(fixture);
+					ctx.hasUI = hasUI;
+					ctx.ui.confirm = async () => assert.fail("Blocked paths must never prompt");
+					ctx.ui.notify = () => assert.fail("Blocked paths must never notify");
+					for (const path of [
+						"private+data", "private+data/file.txt", "secrets.json", "~/host-private/key", "private/.token.local",
+					]) {
+						for (const tool of ["read", "write", "edit"] as const) {
+							assert.ok((await handleFileIOTools(tool, { path }, ctx))?.block, `${tool} ${path}`);
+						}
+						assert.ok((await handleBashTools({ command: `cat '${path}'` }, ctx))?.block, path);
+						assert.ok((await handleBashTools({ command: `rm -rf '${path}'` }, ctx))?.block, path);
+					}
+					for (const path of [
+						"private+data-backup/file.txt", "privateXdata/file.txt", "secrets.json.bak", "private/.token",
+					]) {
+						assert.equal(await handleFileIOTools("read", { path }, ctx), undefined, path);
+					}
+				}
+				assert.equal(checkPathSecurity("/etc/passwd"), "CONSENT_REQUIRED");
+				const prompt = appendSecurityPolicy("base prompt");
+				assert.ok(prompt.startsWith("base prompt"));
+				assert.ok(prompt.includes(join(fixture, "private+data")));
+				assert.ok(!prompt.includes("/etc/"));
+			} finally {
+				cleanupFixture(fixture);
+			}
+		});
+	}
+
+	test("blocked paths: session prompt fields use the loaded project policy", () => {
+		const fixture = createFixture();
+		try {
+			writeSettings(join(fixture, ".pi"), { "extensions.blockedPaths": ["host-specific-secret"] });
+			const ctx = { ...makeCtx(fixture), systemPrompt: "system", aiSystemMessage: "message" };
+			onSessionStart({} as Parameters<typeof onSessionStart>[0], ctx);
+			assert.ok(ctx.systemPrompt.startsWith("system"));
+			assert.ok(ctx.aiSystemMessage.startsWith("message"));
+			for (const prompt of [ctx.systemPrompt, ctx.aiSystemMessage]) {
+				assert.ok(prompt.includes(join(fixture, "host-specific-secret")));
+				assert.ok(!prompt.includes("/etc/"));
+			}
+		} finally {
+			cleanupFixture(fixture);
+		}
+	});
+
+	test("blocked paths: global host list is inherited, explicit project list replaces it", () => {
+		const fixture = createFixture();
+		try {
+			const hostSecret = join(agentDir, "host-secret");
+			writeSettings(agentDir, { "extensions.blockedPaths": [hostSecret] });
+			initSession(fixture);
+			assert.equal(checkPathSecurity(hostSecret), "BLOCK");
+			writeSettings(join(fixture, ".pi"), { "extensions.notificationsEnabled": false });
+			initSession(fixture);
+			assert.equal(checkPathSecurity(hostSecret), "BLOCK");
+			writeSettings(join(fixture, ".pi"), { "extensions.blockedPaths": ["project-secret"] });
+			initSession(fixture);
+			assert.notEqual(checkPathSecurity(hostSecret), "BLOCK");
+			assert.equal(checkPathSecurity(join(fixture, "project-secret")), "BLOCK");
+			writeSettings(join(fixture, ".pi"), { "extensions.blockedPaths": [] });
+			initSession(fixture);
+			assert.notEqual(checkPathSecurity(join(fixture, "project-secret")), "BLOCK");
+			assert.notEqual(checkPathSecurity("/etc/passwd"), "BLOCK");
+			assert.equal(checkPathSecurity(join(fixture, ".env")), "BLOCK");
+		} finally {
+			cleanupFixture(fixture);
+		}
+	});
+
+	test("blocked paths: bundled defaults protect sensitive roots and home env variants", () => {
+		const fixture = createFixture();
+		try {
+			initSession(fixture);
+			for (const path of [
+				join(HOME_DIR, ".ssh"), join(HOME_DIR, ".ssh", "config"), join(HOME_DIR, ".env.local"), "/etc", "/etc/passwd",
+			]) {
+				assert.equal(checkPathSecurity(path), "BLOCK", path);
+			}
+			assert.notEqual(checkPathSecurity(join(HOME_DIR, ".ssh-backup", "config")), "BLOCK");
+		} finally {
+			cleanupFixture(fixture);
+		}
+	});
+
+	test("blocked paths: invalid or missing project settings reset custom rules to host policy", () => {
+		const fixture = createFixture();
+		try {
+			const hostSecret = join(agentDir, "host-secret");
+			writeSettings(agentDir, { "extensions.blockedPaths": [hostSecret] });
+			for (const config of [{}, { "extensions.blockedPaths": [42] }, "{ malformed"]) {
+				writeSettings(join(fixture, ".pi"), { "extensions.blockedPaths": ["old-secret"] });
+				initSession(fixture);
+				assert.equal(checkPathSecurity(join(fixture, "old-secret")), "BLOCK");
+				writeSettings(join(fixture, ".pi"), config);
+				if (typeof config === "string") writeFileSync(join(fixture, ".pi", "settings.json"), config);
+				initSession(fixture);
+				assert.notEqual(checkPathSecurity(join(fixture, "old-secret")), "BLOCK");
+				assert.equal(checkPathSecurity(hostSecret), "BLOCK");
+				assert.equal(checkPathSecurity(join(fixture, "nested", ".env.local")), "BLOCK");
+			}
+		} finally {
+			cleanupFixture(fixture);
+		}
+	});
+
+	test("blocked paths: malformed global policy falls back to bundled defaults", () => {
+		const fixture = createFixture();
+		try {
+			writeSettings(agentDir, { "extensions.blockedPaths": [] });
+			initSession(fixture);
+			assert.notEqual(checkPathSecurity("/etc/passwd"), "BLOCK");
+			writeFileSync(join(agentDir, "settings.json"), "{ malformed");
+			initSession(fixture);
+			assert.equal(checkPathSecurity("/etc/passwd"), "BLOCK");
+		} finally {
+			cleanupFixture(fixture);
+		}
+	});
+
+	test("blocked paths: node_modules prune and deletion exceptions cannot override configured policy", async () => {
+		const fixture = createFixture();
+		try {
+			mkdirSync(join(fixture, "node_modules"));
+			writeSettings(join(fixture, ".pi"), {
+				"extensions.blockedPaths": ["node_modules", "private", "nested/private"],
+			});
+			initSession(fixture);
+			const ctx = makeCtx(fixture);
+			for (const command of [
+				"find . -path ./node_modules -prune -o -type f -print",
+				"rm -rf ./node_modules",
+				"rm -f safe.txt && cat private/key",
+				"rm -rf ./node_modules && cat private/key",
+				"cd nested && rm -rf private",
+			]) {
+				assert.ok((await handleBashTools({ command }, ctx))?.block, command);
+			}
+		} finally {
+			cleanupFixture(fixture);
+		}
+	});
 
 	for (const value of [undefined, false, "off", true, "on"]) {
 		test(`permission gates: setting ${String(value)} controls both approval branches`, async () => {

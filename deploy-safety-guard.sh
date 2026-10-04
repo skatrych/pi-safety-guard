@@ -37,9 +37,10 @@ mkdir -p "$DEPLOY_DIR"
 # 3. Copy files directly into the deployment directory
 echo "🚚 Copying extension modules..."
 cp "$SOURCE_DIR"/*.ts "$DEPLOY_DIR/"
+cp "$SOURCE_DIR/blocked-paths.defaults.json" "$DEPLOY_DIR/"
 
 # 4. Verify deployment
-if [ -f "$DEPLOY_DIR/index.ts" ]; then
+if [ -f "$DEPLOY_DIR/index.ts" ] && [ -f "$DEPLOY_DIR/blocked-paths.defaults.json" ]; then
     echo "✅ Success! Extension deployed to $DEPLOY_DIR"
     echo "✨ Restart Pi agent to apply changes."
 else
