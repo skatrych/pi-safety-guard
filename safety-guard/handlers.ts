@@ -15,7 +15,7 @@ import {
 	extractDestructivePathsFromCommand,
 	extractPathsFromCommand,
 } from "./security";
-import { validateConfig } from "./config";
+import { validateConfig, loadGlobalPermissionGatesEnabled } from "./config";
 import { appendSecurityPolicy } from "./prompt";
 import { discoverNodeModules } from "./node-modules";
 
@@ -234,6 +234,9 @@ export const handleBashTools = async (
 		return undefined;
 	}
 
+	// Only user-escalated checks are optional; all path blocks above remain active.
+	if (!state.permissionGatesEnabled) return undefined;
+
 	// ── Pass 3: Destructive pattern check ────────────────────────────────────
 	const isDangerous = dangerousBashPatterns.some((p) => p.test(command));
 	if (isDangerous) {
@@ -327,6 +330,9 @@ export const handleFileIOTools = async (
 		return undefined;
 	}
 
+	// Only user-escalated checks are optional; all path blocks above remain active.
+	if (!state.permissionGatesEnabled) return undefined;
+
 	// DEFAULT: Require consent
 	if (ctx.hasUI !== true) {
 		console.log(
@@ -372,6 +378,8 @@ export const handleToolCall = async (event: ToolCallEvent, ctx: ExtensionContext
  * Session start handler: Load config and set up whitelist/blacklist.
  */
 export const onSessionStart = (event: SessionStartEvent, ctx: ExtensionContext) => {
+	// Never carry an opt-in across sessions or failed config loads.
+	state.permissionGatesEnabled = false;
 	const effectiveCwd = resolve(ctx.cwd || process.cwd());
 	const nodeModulesDiscovery = discoverNodeModules(effectiveCwd);
 
@@ -431,13 +439,16 @@ export const onSessionStart = (event: SessionStartEvent, ctx: ExtensionContext) 
 				if (validation.notificationsEnabled !== undefined) {
 					state.notificationsEnabled = validation.notificationsEnabled;
 				}
+				state.permissionGatesEnabled = validation.permissionGatesEnabled ?? loadGlobalPermissionGatesEnabled();
 				console.log(
 					`[safety-guard] Config validated: ${state.allowedPaths.length} user-defined paths, notifications=${state.notificationsEnabled}`
 				);
 			}
 		} else {
+			state.permissionGatesEnabled = loadGlobalPermissionGatesEnabled();
 			console.log("[safety-guard] No config found, using defaults (notify=true, global whitelist preserved)");
 		}
+		console.log(`[safety-guard] User permission gates enabled=${state.permissionGatesEnabled}`);
 
 		// Session/project-specific whitelist paths from config.
 		const mergedPaths = [...state.allowedPaths];
@@ -459,6 +470,7 @@ export const onSessionStart = (event: SessionStartEvent, ctx: ExtensionContext) 
 
 		state.configLoaded = true;
 	} catch (error: unknown) {
+		state.permissionGatesEnabled = false;
 		console.error("[safety-guard] Config load failed", error);
 		const fallbackCwd = effectiveCwd || process.cwd();
 		state.allowedPaths = [fallbackCwd];

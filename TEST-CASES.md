@@ -1,5 +1,19 @@
 # Safety Guard Extension - Test Cases
 
+Approval/consent-flow cases below assume `"extensions.permissionGatesEnabled": true` in Pi's `settings.json`. Gates are otherwise off by default. Unconditional protection cases apply with gates both off and on.
+
+## Permission Gate Toggle Regression Cases
+
+Automated in `safety-guard/handlers.test.ts`:
+
+- Missing toggle, `false`, and `"off"`: dangerous non-blacklisted bash and non-whitelisted `read`/`write`/`edit` proceed without confirmation or rejection notifications, both with and without a UI.
+- `true` and `"on"`: both approval flows ask and honor rejection; without a UI, approval-only operations block. Approval is awaited before proceeding.
+- Invalid values (`1`, `null`, `"true"`, `"false"`, `"ON"`, arrays, objects): validation rejects them.
+- Gates both off and on: blacklisted paths, traversal, discovered `node_modules` roots/mutations, and unexcluded project-root `find` remain blocked, with no prompt or rejection notification.
+- Global Pi settings (respecting `PI_CODING_AGENT_DIR`) enable gates; a project config omitting the toggle inherits it, while explicit project `false` overrides it.
+- Reload/session initialization with missing, invalid, or malformed configuration resets a previous opt-in. Project `.env` protection remains installed.
+- Malformed global settings leave gates off without preventing initialization.
+
 ## 1. Lifecycle and Tool Dispatch
 
 ### TC-LIFE-01: Pre-Initialization Block

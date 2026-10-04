@@ -27,8 +27,10 @@ The extension applies a strict priority model:
 2. **WHITELIST** — lower priority than blacklist
    - Automatically allowed.
    - Applies to file I/O tools (`read`, `write`, `edit`) only. Bash commands are not checked against the whitelist.
-3. **DEFAULT / CONSENT REQUIRED**
-   - Requires explicit user confirmation to proceed. Blocked if confirmation cannot be obtained.
+3. **OPTIONAL CONSENT GATES**
+   - Disabled by default: operations that would otherwise require consent proceed without prompting.
+   - When `extensions.permissionGatesEnabled` is `true` or `"on"`, explicit user confirmation is required. Blocked if confirmation cannot be obtained.
+   - Unconditional protections (blacklist, path traversal, and `node_modules` guards) are unaffected.
 
 ### 3.1. Precedence rule
 If a path matches both blacklist and whitelist logic, **blacklist wins**.
@@ -61,12 +63,25 @@ Configuration is loaded from the first existing file in this order:
 2. `<ParentDir>/pi/agent/settings.json`
 3. `<ParentDir>/pi/settings.json`
 
-This is parent-relative lookup, not a generic global-home lookup.
+This existing lookup remains unchanged for allowed paths and notifications.
+
+For the approval toggle only, an explicit value in the selected config takes precedence. If omitted, the toggle is read from Pi's global `~/.pi/agent/settings.json` (or `<PI_CODING_AGENT_DIR>/settings.json` when overridden). A project settings file that omits the toggle therefore inherits the global toggle. Invalid selected configuration or a parse/load failure leaves gates off.
 
 ### 5.2. Supported config keys
 The extension reads these exact keys:
 - `extensions.allowedPaths`
 - `extensions.notificationsEnabled`
+- `extensions.permissionGatesEnabled` — boolean or `"on"`/`"off"`; default `false`
+
+These are literal dotted JSON keys, not nested objects. Enable approval gates in Pi's `settings.json`:
+
+```json
+{
+  "extensions.permissionGatesEnabled": true
+}
+```
+
+`"on"` also enables gates; `false`, `"off"`, or no setting disables them. Changes apply at session start or `/reload`. This toggle affects dangerous bash command approval and non-whitelisted `read`/`write`/`edit` approval only; protected paths still block without asking the user.
 
 ### 5.3. Validation rules
 Configuration validation enforces:
@@ -76,6 +91,8 @@ Configuration validation enforces:
 - `extensions.allowedPaths`, if present, must be an array
 - every element of `extensions.allowedPaths`, if present, must be a string
 - `extensions.notificationsEnabled`, if present, must be a boolean
+- `extensions.permissionGatesEnabled`, if present, must be a boolean or exactly `"on"`/`"off"`; strings `"true"`/`"false"`, numbers, and other values are invalid
+- the permission toggle is reset to `false` before every session configuration load, preventing stale opt-in
 
 ### 5.4. Validation failure behavior
 If validation fails:
@@ -87,6 +104,7 @@ If validation fails:
 If config loading or parsing throws an error:
 - the extension logs the failure
 - notifications are reset to `true`
+- permission gates are reset to `false`
 - allowed paths fall back to:
   - `~/.pi/`
   - `/opt/homebrew/lib/node_modules/@mariozechner/pi-coding-agent/`
@@ -249,7 +267,7 @@ For bash commands, the extension evaluates in this fixed order:
 1. **Blacklist path detection** — if any extracted path argument matches the blacklist, the command is blocked immediately, regardless of whether the command is also dangerous. No user override is possible, except that an exact discovered `node_modules` root may be a target of an otherwise-qualified project-local deletion. Exact discovered `node_modules` roots are also skipped when they appear as `-path <root> -prune` operands (Pass 1 carve-out).
 2. **Conditional project-root `find` guard (Pass 2)** — when CWD-tree `node_modules` was discovered at session start, blocks unexcluded `find` rooted at `.`, `./`, the CWD, or the CWD with a trailing separator. Unexcluded `rg` / recursive `grep` are not gated. Skipped when no CWD-tree install was discovered or when an accepted find exclusion referencing a discovered root is present.
 3. **Project-local deletion allowance** — a direct filesystem deletion command (`rm`, `unlink`, `rmdir`, or `shred`) is allowed without confirmation when all explicit targets resolve strictly inside the project directory. This allowance supports command chains that first `cd` into a project subdirectory. Sensitive paths, including project `.env` files and static blacklist entries, remain blocked; unknown shell expansions and hidden-file globs do not qualify.
-4. **Dangerous pattern detection** — only reached if no blacklisted path was found, Pass 2 did not block, and the project-local deletion allowance did not apply. If a dangerous pattern is detected, user confirmation is required to proceed. Blocked if confirmation cannot be obtained.
+4. **Dangerous pattern detection** — only reached if no blacklisted path was found, Pass 2 did not block, and the project-local deletion allowance did not apply. This check is skipped when permission gates are off. When enabled and a dangerous pattern is detected, user confirmation is required to proceed. Blocked if confirmation cannot be obtained.
 
 The whitelist is intentionally not consulted for bash commands. Any bash command that passes all checks above is allowed to proceed regardless of whether its path arguments are whitelisted.
 
@@ -303,7 +321,9 @@ For `read`, `write`, and `edit`:
 - whitelist match:
   - allowed automatically
 - neither blacklist nor whitelist:
-  - requires user confirmation to proceed; blocked if confirmation cannot be obtained
+  - allowed without prompting when permission gates are off (default)
+  - when gates are enabled, requires user confirmation to proceed; blocked if confirmation cannot be obtained
+- path traversal and discovered `node_modules` mutation blocks remain unconditional
 
 ### 10.5. Missing input behavior
 If `read`, `write`, or `edit` input does not contain a usable string `path`, the extension returns without intervention.
@@ -329,18 +349,18 @@ The appended policy communicates restrictions around:
 ### 11.4. Prompt-policy alignment
 Blacklisted path access is strictly enforced at runtime: it is blocked immediately with no user override, matching the prompt policy claim that these restrictions cannot be bypassed.
 
-A narrower mismatch remains for dangerous bash commands that do not target a blacklisted path: the prompt policy implies all dangerous operations are fully enforced, but the runtime still allows interactive user approval for such commands in interactive mode.
+Dangerous bash commands that do not target a blacklisted path are allowed without prompting when permission gates are off. When gates are enabled, interactive user approval is required. The path restrictions in the prompt remain unconditional.
 
 ## 12. User Interaction, Notifications, and Logging
 
 ### 12.1. Interactive approval flow
-All confirmation prompts are awaited before allowing execution to proceed.
+Permission gates are off by default. When enabled, all confirmation prompts are awaited before allowing execution to proceed. Protected-path blocks never prompt or offer user override, regardless of this setting.
 
 ### 12.2. Notification behavior
 Notifications are shown only in user-rejection branches where notification logic is implemented, and only if `notificationsEnabled` is `true`.
 
 ### 12.3. Non-interactive behavior
-Operations that require user confirmation are blocked when confirmation cannot be obtained (e.g., no UI available).
+When permission gates are enabled, operations that require user confirmation are blocked when confirmation cannot be obtained (e.g., no UI available). When gates are off, these approval-only operations proceed even without a UI; unconditional protections remain active.
 
 ### 12.4. Logging behavior
 Observable logging includes, at minimum:
@@ -367,7 +387,7 @@ The extension returns without intervention when:
 ## 14. Known Gaps / Current Limitations
 Current implementation limitations that should be preserved or intentionally addressed in refactoring:
 - unmonitored tools are not protected
-- prompt policy is partially stricter than runtime enforcement: dangerous bash commands that do not target a blacklisted path can still be approved by the user in interactive mode
+- approval-only operations are allowed by default; opting into permission gates adds user consent checks but does not change protected-path enforcement
 - bash path extraction is heuristic and may miss complex shell-expanded references
 - `node_modules` discovery is bounded to CWD, one parent, and immediate CWD children; grandparent installs and deeper workspace layouts are not discovered from the workspace root
 - discovery is a session snapshot and may be stale after dependency installation or removal until the next `session_start`

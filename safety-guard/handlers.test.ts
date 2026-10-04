@@ -14,6 +14,7 @@ import { handleBashTools, handleFileIOTools, onSessionStart } from "./handlers";
 import { state } from "./state";
 import { BLACKLIST, WHITELIST } from "./constants";
 import { checkPathSecurity } from "./security";
+import { validateConfig } from "./config";
 
 const createFixture = (): string => {
 	return mkdtempSync(join(tmpdir(), "safety-guard-"));
@@ -37,6 +38,7 @@ const makeCtx = (cwd: string): MockCtx => ({
 type StateSnapshot = {
 	allowedPaths: string[];
 	notificationsEnabled: boolean;
+	permissionGatesEnabled: boolean;
 	configLoaded: boolean;
 	nodeModulesPaths: string[];
 	nodeModulesInCwdTree: boolean;
@@ -49,6 +51,7 @@ let stateSnapshot: StateSnapshot;
 const captureState = (): StateSnapshot => ({
 	allowedPaths: [...state.allowedPaths],
 	notificationsEnabled: state.notificationsEnabled,
+	permissionGatesEnabled: state.permissionGatesEnabled,
 	configLoaded: state.configLoaded,
 	nodeModulesPaths: [...state.nodeModulesPaths],
 	nodeModulesInCwdTree: state.nodeModulesInCwdTree,
@@ -59,6 +62,7 @@ const captureState = (): StateSnapshot => ({
 const restoreState = (snap: StateSnapshot): void => {
 	state.allowedPaths = snap.allowedPaths;
 	state.notificationsEnabled = snap.notificationsEnabled;
+	state.permissionGatesEnabled = snap.permissionGatesEnabled;
 	state.configLoaded = snap.configLoaded;
 	state.nodeModulesPaths = snap.nodeModulesPaths;
 	state.nodeModulesInCwdTree = snap.nodeModulesInCwdTree;
@@ -67,6 +71,17 @@ const restoreState = (snap: StateSnapshot): void => {
 	WHITELIST.length = 0;
 	WHITELIST.push(...snap.whitelist);
 };
+
+test("config: permission gates only accept booleans and on/off strings", () => {
+	for (const value of [true, false, "on", "off"]) {
+		const result = validateConfig({ "extensions.permissionGatesEnabled": value });
+		assert.equal(result.valid, true);
+		if (result.valid) assert.equal(result.permissionGatesEnabled, value === true || value === "on");
+	}
+	for (const value of [1, 0, null, "true", "false", "ON", [], {}]) {
+		assert.equal(validateConfig({ "extensions.permissionGatesEnabled": value }).valid, false);
+	}
+});
 
 const initSession = (cwd: string): void => {
 	onSessionStart({} as Parameters<typeof onSessionStart>[0], makeCtx(cwd));
@@ -201,12 +216,175 @@ test("discovery: does not discover grandparent node_modules", () => {
 });
 
 describe("handler integration", { concurrency: false }, () => {
+	let agentDir: string;
+	let previousAgentDir: string | undefined;
+
 	beforeEach(() => {
 		stateSnapshot = captureState();
+		previousAgentDir = process.env.PI_CODING_AGENT_DIR;
+		agentDir = createFixture();
+		process.env.PI_CODING_AGENT_DIR = agentDir;
 	});
 
 	afterEach(() => {
 		restoreState(stateSnapshot);
+		if (previousAgentDir === undefined) delete process.env.PI_CODING_AGENT_DIR;
+		else process.env.PI_CODING_AGENT_DIR = previousAgentDir;
+		cleanupFixture(agentDir);
+	});
+
+	const writeSettings = (dir: string, config: unknown): void => {
+		mkdirSync(dir, { recursive: true });
+		writeFileSync(join(dir, "settings.json"), JSON.stringify(config));
+	};
+
+	for (const value of [undefined, false, "off", true, "on"]) {
+		test(`permission gates: setting ${String(value)} controls both approval branches`, async () => {
+			const fixture = createFixture();
+			try {
+				writeSettings(join(fixture, ".pi"), { "extensions.permissionGatesEnabled": value });
+				initSession(fixture);
+				const enabled = value === true || value === "on";
+				assert.equal(state.permissionGatesEnabled, enabled);
+				for (const hasUI of [true, false]) {
+					const ctx = makeCtx(fixture);
+					ctx.hasUI = hasUI;
+					let prompts = 0;
+					let notifications = 0;
+					ctx.ui.confirm = async () => {
+						prompts++;
+						return false;
+					};
+					ctx.ui.notify = () => {
+						notifications++;
+					};
+					const bash = await handleBashTools({ command: "helm uninstall release" }, ctx);
+					assert.equal(bash?.block === true, enabled);
+					for (const tool of ["read", "write", "edit"] as const) {
+						const file = await handleFileIOTools(tool, { path: join(agentDir, "outside.txt") }, ctx);
+						assert.equal(file?.block === true, enabled);
+					}
+					assert.equal(prompts, enabled && hasUI ? 4 : 0);
+					assert.equal(notifications, enabled && hasUI ? 4 : 0);
+				}
+			} finally {
+				cleanupFixture(fixture);
+			}
+		});
+	}
+
+	test("permission gates: enabled prompts await user approval", async () => {
+		const fixture = createFixture();
+		try {
+			writeSettings(join(fixture, ".pi"), { "extensions.permissionGatesEnabled": true });
+			initSession(fixture);
+			const ctx = makeCtx(fixture);
+			ctx.hasUI = true;
+			let approve!: (value: boolean) => void;
+			ctx.ui.confirm = () => new Promise<boolean>((resolve) => {
+				approve = resolve;
+			});
+			for (const operation of [
+				() => handleBashTools({ command: "helm uninstall release" }, ctx),
+				() => handleFileIOTools("read", { path: join(agentDir, "outside.txt") }, ctx),
+			]) {
+				let settled = false;
+				const pending = operation().then((result) => {
+					settled = true;
+					return result;
+				});
+				await Promise.resolve();
+				assert.equal(settled, false);
+				approve(true);
+				assert.equal(await pending, undefined);
+			}
+		} finally {
+			cleanupFixture(fixture);
+		}
+	});
+
+	for (const enabled of [false, true]) {
+		test(`permission gates: protected paths still block without prompting (enabled=${enabled})`, async () => {
+			const fixture = createFixture();
+			try {
+				mkdirSync(join(fixture, "node_modules"));
+				writeSettings(join(fixture, ".pi"), { "extensions.permissionGatesEnabled": enabled });
+				initSession(fixture);
+				const ctx = makeCtx(fixture);
+				ctx.hasUI = true;
+				ctx.ui.confirm = async () => {
+					assert.fail("Protected paths must never prompt");
+				};
+				ctx.ui.notify = () => {
+					assert.fail("Protected paths must not notify");
+				};
+				for (const command of ["cat .env", "rm -rf /etc/passwd", "ls ./node_modules", "find . -type f"]) {
+					assert.ok((await handleBashTools({ command }, ctx))?.block, command);
+				}
+				for (const tool of ["read", "write", "edit"] as const) {
+					for (const path of [".env", "/etc/passwd", "node_modules", "../outside.txt"]) {
+						assert.ok((await handleFileIOTools(tool, { path }, ctx))?.block);
+					}
+				}
+				for (const tool of ["write", "edit"] as const) {
+					assert.ok((await handleFileIOTools(tool, { path: "node_modules/pkg/index.js" }, ctx))?.block);
+				}
+			} finally {
+				cleanupFixture(fixture);
+			}
+		});
+	}
+
+	test("permission gates: global Pi settings apply when project omits the toggle", () => {
+		const fixture = createFixture();
+		try {
+			writeSettings(agentDir, { "extensions.permissionGatesEnabled": "on" });
+			initSession(fixture);
+			assert.equal(state.permissionGatesEnabled, true);
+			writeSettings(join(fixture, ".pi"), { "extensions.notificationsEnabled": false });
+			initSession(fixture);
+			assert.equal(state.permissionGatesEnabled, true);
+			assert.equal(state.notificationsEnabled, false);
+			writeSettings(join(fixture, ".pi"), { "extensions.permissionGatesEnabled": false });
+			initSession(fixture);
+			assert.equal(state.permissionGatesEnabled, false);
+		} finally {
+			cleanupFixture(fixture);
+		}
+	});
+
+	for (const config of [{}, { "extensions.permissionGatesEnabled": 1 }, null, "{ malformed"]) {
+		test(`permission gates: missing/invalid config resets an enabled session (${JSON.stringify(config)})`, () => {
+			const fixture = createFixture();
+			try {
+				writeSettings(join(fixture, ".pi"), { "extensions.permissionGatesEnabled": true });
+				initSession(fixture);
+				assert.equal(state.permissionGatesEnabled, true);
+				writeSettings(join(fixture, ".pi"), config);
+				if (typeof config === "string") {
+					writeFileSync(join(fixture, ".pi", "settings.json"), config);
+				}
+				initSession(fixture);
+				assert.equal(state.permissionGatesEnabled, false);
+				assert.equal(state.configLoaded, true);
+				assert.equal(checkPathSecurity(join(fixture, ".env")), "BLOCK");
+			} finally {
+				cleanupFixture(fixture);
+			}
+		});
+	}
+
+	test("permission gates: malformed global settings default off", () => {
+		const fixture = createFixture();
+		try {
+			state.permissionGatesEnabled = true;
+			writeFileSync(join(agentDir, "settings.json"), "{ malformed");
+			initSession(fixture);
+			assert.equal(state.permissionGatesEnabled, false);
+			assert.equal(state.configLoaded, true);
+		} finally {
+			cleanupFixture(fixture);
+		}
 	});
 
 	test("handler: no cwd-tree candidate allows find . scan", async () => {
