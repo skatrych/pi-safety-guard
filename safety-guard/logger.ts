@@ -1,4 +1,4 @@
-import { appendFileSync, mkdirSync } from "node:fs";
+import { appendFileSync, mkdirSync, renameSync, statSync } from "node:fs";
 import { dirname, join } from "node:path";
 import { inspect } from "node:util";
 import { getAgentDir } from "./utils";
@@ -12,6 +12,10 @@ const LOG_FILENAME = "safety-guard.log";
 // Control characters (incl. ESC, which enables ANSI injection) are dropped from messages.
 // eslint-disable-next-line no-control-regex -- intentional: strip every control character
 const CONTROL_CHARS = new RegExp("[\\u0000-\\u001f\\u007f]", "g");
+
+// Size cap for the always-on log: once the active file exceeds this it is
+// rotated to safety-guard.log.1 (previous generation overwritten) before appending.
+const MAX_LOG_BYTES = 5 * 1024 * 1024;
 
 /** Log file path: <agent-dir>/logs/safety-guard.log */
 const getLogPath = (): string => {
@@ -34,10 +38,26 @@ const debugEnabled = (): boolean => {
 	return process.env.SAFETY_GUARD_LOG === "debug";
 };
 
+/**
+ * Rotate the active log to .1 once it exceeds the size cap. Rename preserves
+ * the file's 0600 mode. A missing file (first run) or a failed rename must
+ * not break logging; the append is attempted either way.
+ */
+const rotateIfLarge = (logPath: string): void => {
+	try {
+		if (statSync(logPath).size > MAX_LOG_BYTES) {
+			renameSync(logPath, `${logPath}.1`);
+		}
+	} catch {
+		// First run (ENOENT) or non-fatal rotation failure.
+	}
+};
+
 const writeLine = (level: "info" | "error" | "debug", message: string): void => {
 	try {
 		const logPath = getLogPath();
 		mkdirSync(dirname(logPath), { recursive: true, mode: 0o700 });
+		rotateIfLarge(logPath);
 		// One physical line per entry: escape newlines, drop remaining control chars.
 		const safe = message.replace(/[\r\n]+/g, "\\n").replace(CONTROL_CHARS, "");
 		appendFileSync(logPath, `${new Date().toISOString()} [${level}] [safety-guard] ${safe}\n`, {

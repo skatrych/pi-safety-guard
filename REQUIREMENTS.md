@@ -382,13 +382,13 @@ Dangerous bash commands that do not target a blacklisted path are allowed withou
 Permission gates are off by default. When enabled, all confirmation prompts are awaited before allowing execution to proceed. Protected-path blocks never prompt or offer user override, regardless of this setting.
 
 ### 12.2. Notification behavior
-Notifications are shown only in user-rejection branches where notification logic is implemented, and only if `notificationsEnabled` is `true`.
+Notifications are shown only in user-rejection branches where notification logic is implemented, and only if `notificationsEnabled` is `true`. A config load or validation failure at session start additionally emits a `warning` notification (permission gates are disabled in that case), under the same `notificationsEnabled` and UI-availability conditions.
 
 ### 12.3. Non-interactive behavior
 When permission gates are enabled, operations that require user confirmation are blocked when confirmation cannot be obtained (e.g., no UI available). When gates are off, these approval-only operations proceed even without a UI; unconditional protections remain active.
 
 ### 12.4. Logging behavior
-All log lines are appended to `<agent-dir>/logs/safety-guard.log` (agent dir = `$PI_CODING_AGENT_DIR`, defaulting to `~/.pi/agent`). Logs are never written to the console or TUI. Success-level `ALLOWED` lines are only logged when `SAFETY_GUARD_LOG=debug` is set; `BLOCKED`, rejection, and error lines are always logged.
+All log lines are appended to `<agent-dir>/logs/safety-guard.log` (agent dir = `$PI_CODING_AGENT_DIR`, defaulting to `~/.pi/agent`). Logs are never written to the console or TUI. Success-level `ALLOWED` lines are only logged when `SAFETY_GUARD_LOG=debug` is set; `BLOCKED`, rejection, and error lines are always logged. Once the active log exceeds 5 MB it is rotated to `safety-guard.log.1` (previous generation overwritten), bounding the always-on log.
 
 Observable logging includes, at minimum:
 - configuration validation success/failure

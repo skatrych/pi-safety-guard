@@ -1,16 +1,20 @@
 import { describe, test, beforeEach, afterEach } from "node:test";
 import assert from "node:assert/strict";
 import {
+	chmodSync,
+	closeSync,
 	existsSync,
+	ftruncateSync,
 	mkdirSync,
 	mkdtempSync,
+	openSync,
 	readFileSync,
 	rmSync,
 	statSync,
 	symlinkSync,
 	writeFileSync,
 } from "node:fs";
-import { join, resolve, sep } from "node:path";
+import { dirname, join, resolve, sep } from "node:path";
 import { tmpdir } from "node:os";
 import { discoverNodeModules } from "./node-modules";
 import { handleBashTools, handleFileIOTools, handleToolCall, onSessionStart } from "./handlers";
@@ -979,6 +983,70 @@ describe("handler integration", { concurrency: false }, () => {
 			cleanupFixture(fixture);
 		}
 	});
+
+	test("config failure: warning notify on invalid or malformed settings, UI only", () => {
+		const warning = {
+			message: "safety-guard: config load failed, permission gates disabled",
+			type: "warning",
+		};
+		for (const [label, content] of [
+			["invalid field", JSON.stringify({ "extensions.blockedPaths": [42] })],
+			["malformed json", "{ malformed"],
+		]) {
+			for (const hasUI of [true, false]) {
+				const fixture = createFixture();
+				try {
+					mkdirSync(join(fixture, ".pi"), { recursive: true });
+					writeFileSync(join(fixture, ".pi", "settings.json"), content);
+					const notified: Array<{ message: string; type?: string }> = [];
+					const ctx = makeCtx(fixture);
+					ctx.hasUI = hasUI;
+					ctx.ui.notify = (message: string, type?: string) => {
+						notified.push({ message, type });
+					};
+					onSessionStart({} as Parameters<typeof onSessionStart>[0], ctx);
+					if (hasUI) {
+						assert.deepEqual(notified, [warning], label);
+					} else {
+						assert.equal(notified.length, 0, label);
+					}
+					assert.equal(state.configLoaded, true, label);
+				} finally {
+					cleanupFixture(fixture);
+				}
+			}
+		}
+	});
+
+	test("config failure: no notify on valid settings; suppressed when notifications disabled", () => {
+		const fixture = createFixture();
+		try {
+			mkdirSync(join(fixture, ".pi"), { recursive: true });
+			writeFileSync(
+				join(fixture, ".pi", "settings.json"),
+				JSON.stringify({ "extensions.blockedPaths": ["x"] })
+			);
+			const notified: string[] = [];
+			const ctx = makeCtx(fixture);
+			ctx.hasUI = true;
+			ctx.ui.notify = (message: string) => {
+				notified.push(message);
+			};
+			onSessionStart({} as Parameters<typeof onSessionStart>[0], ctx);
+			assert.equal(notified.length, 0, "valid settings must not warn");
+
+			// Validation failure with notifications disabled stays silent.
+			state.notificationsEnabled = false;
+			writeFileSync(
+				join(fixture, ".pi", "settings.json"),
+				JSON.stringify({ "extensions.blockedPaths": [42] })
+			);
+			onSessionStart({} as Parameters<typeof onSessionStart>[0], ctx);
+			assert.equal(notified.length, 0, "notificationsEnabled=false suppresses the warning");
+		} finally {
+			cleanupFixture(fixture);
+		}
+	});
 });
 
 describe("logger", { concurrency: false }, () => {
@@ -999,6 +1067,13 @@ describe("logger", { concurrency: false }, () => {
 
 	const readLogLines = (): string[] => {
 		return readFileSync(join(agentDir, "logs", "safety-guard.log"), "utf8").trimEnd().split("\n");
+	};
+
+	// Grow an existing file to an exact byte size (sparse) without writing it.
+	const truncateTo = (path: string, size: number): void => {
+		const fd = openSync(path, "r+");
+		ftruncateSync(fd, size);
+		closeSync(fd);
 	};
 
 	test("writes one timestamped line per entry to <agent-dir>/logs/safety-guard.log", () => {
@@ -1023,6 +1098,43 @@ describe("logger", { concurrency: false }, () => {
 		logInfo("perm check");
 		assert.equal(statSync(join(agentDir, "logs")).mode & 0o077, 0);
 		assert.equal(statSync(join(agentDir, "logs", "safety-guard.log")).mode & 0o077, 0);
+	});
+
+	test("rotates the active log to safety-guard.log.1 past the 5 MB size cap", () => {
+		const logPath = join(agentDir, "logs", "safety-guard.log");
+		mkdirSync(dirname(logPath), { recursive: true });
+		writeFileSync(logPath, "", { mode: 0o600 }); // the logger always creates 0600 files
+		truncateTo(logPath, 5 * 1024 * 1024 + 1); // sparse file just past the cap
+		logInfo("fresh line");
+		assert.equal(statSync(`${logPath}.1`).size, 5 * 1024 * 1024 + 1);
+		assert.equal(statSync(`${logPath}.1`).mode & 0o077, 0, "rotated file keeps 0600");
+		assert.equal(readLogLines().length, 1, "active file is recreated after rotation");
+		assert.ok(readLogLines()[0].includes("fresh line"));
+	});
+
+	test("rotation overwrites an existing .1 instead of growing generations", () => {
+		const logPath = join(agentDir, "logs", "safety-guard.log");
+		mkdirSync(dirname(logPath), { recursive: true });
+		writeFileSync(`${logPath}.1`, "old generation\n");
+		writeFileSync(logPath, "");
+		truncateTo(logPath, 5 * 1024 * 1024 + 2);
+		logInfo("newest");
+		assert.equal(statSync(`${logPath}.1`).size, 5 * 1024 * 1024 + 2);
+		assert.ok(!readFileSync(`${logPath}.1`, "utf8").includes("old generation"));
+	});
+
+	test("logging continues when the rotation rename fails", () => {
+		const logPath = join(agentDir, "logs", "safety-guard.log");
+		mkdirSync(dirname(logPath), { recursive: true });
+		writeFileSync(logPath, "");
+		truncateTo(logPath, 5 * 1024 * 1024 + 1);
+		chmodSync(dirname(logPath), 0o555); // blocks rename; the existing file stays writable
+		try {
+			logInfo("still logged");
+			assert.ok(readLogLines().some((line) => line.includes("still logged")));
+		} finally {
+			chmodSync(dirname(logPath), 0o700);
+		}
 	});
 
 	test("does not throw when PI_CODING_AGENT_DIR points at an existing file", () => {

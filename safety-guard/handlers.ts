@@ -23,6 +23,9 @@ import { discoverNodeModules } from "./node-modules";
 
 const STATIC_WHITELIST = [...WHITELIST];
 
+// User-visible signal for config failures, which would otherwise only appear in the log file.
+const CONFIG_FAILURE_NOTIFY = "safety-guard: config load failed, permission gates disabled";
+
 const stripTrailingSep = (path: string): string => {
 	if (path.length > 1 && path.endsWith(sep)) {
 		return path.slice(0, -1);
@@ -432,6 +435,9 @@ export const onSessionStart = (event: SessionStartEvent, ctx: ExtensionContext) 
 			const validation = validateConfig(config);
 			if (!validation.valid) {
 				logError(`Config validation failed: ${validation.errors.join(", ")}`);
+				if (ctx.hasUI === true && state.notificationsEnabled) {
+					ctx.ui.notify(CONFIG_FAILURE_NOTIFY, "warning");
+				}
 			} else {
 				if (validation.blockedPaths !== undefined) {
 					state.blockedPaths = validation.blockedPaths;
@@ -485,6 +491,9 @@ export const onSessionStart = (event: SessionStartEvent, ctx: ExtensionContext) 
 		}
 		rebuildSessionBlacklist(fallbackCwd, nodeModulesDiscovery.paths);
 		state.configLoaded = true;
+		if (ctx.hasUI === true && state.notificationsEnabled) {
+			ctx.ui.notify(CONFIG_FAILURE_NOTIFY, "warning");
+		}
 	}
 
 	// Render the effective policy only after host/project settings have loaded.
