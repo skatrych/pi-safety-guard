@@ -10,7 +10,7 @@ import {
 import { join, resolve, sep } from "node:path";
 import { tmpdir } from "node:os";
 import { discoverNodeModules } from "./node-modules";
-import { handleBashTools, handleFileIOTools, onSessionStart } from "./handlers";
+import { handleBashTools, handleFileIOTools, handleToolCall, onSessionStart } from "./handlers";
 import { state } from "./state";
 import { BLACKLIST, WHITELIST, HOME_DIR } from "./constants";
 import { appendSecurityPolicy } from "./prompt";
@@ -274,7 +274,7 @@ describe("handler integration", { concurrency: false }, () => {
 					for (const path of [
 						"private+data", "private+data/file.txt", "secrets.json", "~/host-private/key", "private/.token.local",
 					]) {
-						for (const tool of ["read", "write", "edit"] as const) {
+						for (const tool of ["read", "write", "edit", "grep", "find"] as const) {
 							assert.ok((await handleFileIOTools(tool, { path }, ctx))?.block, `${tool} ${path}`);
 						}
 						assert.ok((await handleBashTools({ command: `cat '${path}'` }, ctx))?.block, path);
@@ -433,12 +433,12 @@ describe("handler integration", { concurrency: false }, () => {
 					};
 					const bash = await handleBashTools({ command: "helm uninstall release" }, ctx);
 					assert.equal(bash?.block === true, enabled);
-					for (const tool of ["read", "write", "edit"] as const) {
+					for (const tool of ["read", "write", "edit", "grep", "find"] as const) {
 						const file = await handleFileIOTools(tool, { path: join(agentDir, "outside.txt") }, ctx);
 						assert.equal(file?.block === true, enabled);
 					}
-					assert.equal(prompts, enabled && hasUI ? 4 : 0);
-					assert.equal(notifications, enabled && hasUI ? 4 : 0);
+					assert.equal(prompts, enabled && hasUI ? 6 : 0);
+					assert.equal(notifications, enabled && hasUI ? 6 : 0);
 				}
 			} finally {
 				cleanupFixture(fixture);
@@ -476,6 +476,34 @@ describe("handler integration", { concurrency: false }, () => {
 		}
 	});
 
+	test("handler: grep and find omit path for cwd search; external path follows consent flow", async () => {
+		const fixture = createFixture();
+		try {
+			writeSettings(join(fixture, ".pi"), { "extensions.permissionGatesEnabled": true });
+			initSession(fixture);
+			const ctx = makeCtx(fixture);
+			ctx.hasUI = true;
+			let prompts = 0;
+			ctx.ui.confirm = async () => {
+				prompts++;
+				return false;
+			};
+			const dispatch = (tool: "grep" | "find", input: { pattern: string; path?: string }) => {
+				const event = { type: "tool_call", toolCallId: "1", toolName: tool, input };
+				return handleToolCall(event as Parameters<typeof handleToolCall>[0], ctx);
+			};
+			assert.equal(await dispatch("grep", { pattern: "token" }), undefined);
+			assert.equal(await dispatch("find", { pattern: "*.env" }), undefined);
+			assert.equal(await dispatch("grep", { pattern: "x", path: "sub/file.txt" }), undefined);
+			assert.equal(prompts, 0);
+			const outside = await dispatch("find", { pattern: "*", path: join(agentDir, "outside.txt") });
+			assert.equal(outside?.block === true, true);
+			assert.equal(prompts, 1);
+		} finally {
+			cleanupFixture(fixture);
+		}
+	});
+
 	for (const enabled of [false, true]) {
 		test(`permission gates: protected paths still block without prompting (enabled=${enabled})`, async () => {
 			const fixture = createFixture();
@@ -494,7 +522,7 @@ describe("handler integration", { concurrency: false }, () => {
 				for (const command of ["cat .env", "rm -rf /etc/passwd", "ls ./node_modules", "find . -type f"]) {
 					assert.ok((await handleBashTools({ command }, ctx))?.block, command);
 				}
-				for (const tool of ["read", "write", "edit"] as const) {
+				for (const tool of ["read", "write", "edit", "grep", "find"] as const) {
 					for (const path of [".env", "/etc/passwd", "node_modules", "../outside.txt"]) {
 						assert.ok((await handleFileIOTools(tool, { path }, ctx))?.block);
 					}
@@ -831,6 +859,21 @@ describe("handler integration", { concurrency: false }, () => {
 				ctx
 			);
 			assert.equal(scopedResult, undefined);
+			/* grep/find are read-equivalent: package paths stay readable */
+			const grepPkgResult = await handleFileIOTools(
+				"grep",
+				{ pattern: "x", path: join(nodeModules, "pkg.js") },
+				ctx
+			);
+			assert.equal(grepPkgResult, undefined);
+			const findPkgResult = await handleFileIOTools(
+				"find",
+				{ pattern: "*", path: join(nodeModules, "@scope", "pkg") },
+				ctx
+			);
+			assert.equal(findPkgResult, undefined);
+			const grepRootResult = await handleFileIOTools("grep", { pattern: "x", path: nodeModules }, ctx);
+			assert.ok(grepRootResult?.block);
 			const rootResult = await handleFileIOTools("read", { path: nodeModules }, ctx);
 			assert.ok(rootResult?.block);
 			assert.match(rootResult!.reason, /blacklisted/i);

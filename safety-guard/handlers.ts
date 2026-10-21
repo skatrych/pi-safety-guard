@@ -1,4 +1,4 @@
-import type { ExtensionContext, SessionStartEvent, ToolCallEvent } from "@mariozechner/pi-coding-agent";
+import type { ExtensionContext, SessionStartEvent, ToolCallEvent } from "@earendil-works/pi-coding-agent";
 import { existsSync, readFileSync as fsReadFileSync } from "node:fs";
 import { join, resolve, dirname, sep, relative } from "node:path";
 import { state } from "./state";
@@ -269,10 +269,11 @@ export const handleBashTools = async (
 };
 
 /**
- * Handle file I/O tool calls (read/write/edit) with path validation.
+ * Handle read-equivalent tool calls (read/write/edit/grep/find) with path validation.
+ * grep/find only carry an optional `path` search root: omitted path means cwd and is allowed.
  */
 export const handleFileIOTools = async (
-	toolName: "read" | "write" | "edit",
+	toolName: "read" | "write" | "edit" | "grep" | "find",
 	input: unknown,
 	ctx: ExtensionContext
 ): Promise<{ block: boolean; reason: string } | undefined> => {
@@ -374,7 +375,13 @@ export const handleToolCall = async (event: ToolCallEvent, ctx: ExtensionContext
 
 	if (event.toolName === "bash") {
 		return handleBashTools(event.input, ctx);
-	} else if (event.toolName === "read" || event.toolName === "write" || event.toolName === "edit") {
+	} else if (
+		event.toolName === "read" ||
+		event.toolName === "write" ||
+		event.toolName === "edit" ||
+		event.toolName === "grep" ||
+		event.toolName === "find"
+	) {
 		return handleFileIOTools(event.toolName, event.input, ctx);
 	}
 
