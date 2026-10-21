@@ -1,4 +1,4 @@
-# TODO List
+# TODO List (deprecated)
 
 ## Open Tasks
 
@@ -9,12 +9,21 @@
 - [x] 5: Improve bash path extraction to detect bare filenames
 - [ ] 6: Align prompt policy with runtime reality regarding bypassability
 - [ ] 7: Audit and add monitoring for other custom/future tools
-- [ ] 8: Ensure consistent resolution of tilde-expanded paths in all tools
+- [x] 8: Ensure consistent resolution of tilde-expanded paths in all tools
 - [ ] 9: Review and improve bash command sanitization patterns
 - [ ] 10: Enhance logging for blocked/rejected operations
 - [x] 11: Strictly enforce BLACKLIST policy by disabling interactive user overrides
-- [ ] 12: Detect blacklisted paths in bash pipes and output redirects (e.g., `> .env`, `| tee .env`)
-- [ ] 13: Prevent access to files outside the current project directory (directory traversal)
+- [x] 12: Detect blacklisted paths in bash pipes and output redirects (e.g., `> .env`, `| tee .env`)
+- [ ] 13: Gate directory traversal (`../`) in bash commands; file-IO tool paths are already blocked
+- [ ] 14: Add test coverage for redirect/pipe/traversal bash cases
+
+## NOTES
+
+- **6**: The prompt policy states restrictions "cannot be bypassed", but bash variable indirection bypasses path extraction (verified: `X=.env; cat $X` is not detected; tokens starting with `$` are skipped). Either close this gap or soften the prompt wording.
+- **8**: Closed 2026-10-21 after verification: `expandTilde` is applied in file-IO handlers, `resolvePathCandidate`, `extractDestructivePathsFromCommand` (incl. `cd` tracking), prune-operand resolution, and `compileBlockedPaths`.
+- **12**: Closed 2026-10-21 after verification: `REDIRECT_OPERATORS` + `expectRedirectTarget` in `extractPathsFromCommand` detect `> .env`, `>> .env.production`, and `| tee .env` (bare-token resolution). Variable indirection (see 6) remains a bypass route.
+- **13**: `hasPathTraversal` blocks `../` in `read`/`write`/`edit`/`grep`/`find` path params, and the project-directory fallback contains file-IO to cwd. Remaining gap: bash `../` is not gated (verified: `cat ../.env` and `echo x > ../.env` pass — `resolve()` collapses `..` outside the project and the project `.env` blacklist regex no longer matches).
+- **14**: `handlers.test.ts` currently has no tests for redirect targets, pipe operands, or traversal in bash commands.
 
 
 ## TASK DESCRIPTION
@@ -23,7 +32,7 @@
 - **4**: While tilde expansion (e.g., `~/path`) is handled during bash command path extraction, it is currently missing for `read` and `write` tool inputs. This means paths starting with `~` might bypass security checks or fail to resolve correctly.
 - **5**: The current bash parser ignores bare words (e.g., `config.json`) to reduce false positives. This creates a security gap where sensitive files referenced without explicit path prefixes (like `./` or `/`) bypass path-based blacklist checks.
 - **11**: Enforce a strict blocking policy for any operations targeting blacklisted paths, removing the option for user override. Operations involving 'dangerous' bash commands that do not target blacklisted paths should retain the interactive user approval flow. This ensures absolute protection for sensitive paths while maintaining flexibility for potentially risky but necessary shell operations.
-- **13**: Implement a check to prevent the agent from accessing files outside the current working directory or the project root. This should mitigate directory traversal attacks where the agent tries to read or write files in neighboring repositories or system directories (e.g., using `../`).
+- **13**: Implement a check to prevent the agent from accessing files outside the current working directory or the project root. This should mitigate directory traversal attacks where the agent tries to read or write files in neighboring repositories or system directories (e.g., using `../`). Status 2026-10-21: file-IO tool paths are covered (`hasPathTraversal` + project-dir fallback); the bash path remains unhandled.
 
 
 
