@@ -1,7 +1,7 @@
 import { existsSync, readFileSync } from "node:fs";
-import { homedir } from "node:os";
 import { join } from "node:path";
-import { expandTilde } from "./utils";
+import { getAgentDir } from "./utils";
+import { logError } from "./logger";
 import { DEFAULT_BLOCKED_PATHS } from "./constants";
 
 /**
@@ -83,18 +83,17 @@ export const validateConfig = (config: unknown): {
 
 /** Read host settings without changing the legacy allowed-path/notification lookup. */
 const loadGlobalConfig = (): Extract<ReturnType<typeof validateConfig>, { valid: true }> | undefined => {
-	const agentDir = expandTilde(process.env.PI_CODING_AGENT_DIR || join(homedir(), ".pi", "agent"));
-	const settingsPath = join(agentDir, "settings.json");
+	const settingsPath = join(getAgentDir(), "settings.json");
 	try {
 		if (!existsSync(settingsPath)) return undefined;
 		const validation = validateConfig(JSON.parse(readFileSync(settingsPath, "utf8")));
 		if (!validation.valid) {
-			console.error(`[safety-guard] Global config validation failed: ${validation.errors.join(", ")}`);
+			logError(`Global config validation failed: ${validation.errors.join(", ")}`);
 			return undefined;
 		}
 		return validation;
 	} catch (error: unknown) {
-		console.error("[safety-guard] Global settings load failed", error);
+		logError("Global settings load failed", error);
 		return undefined;
 	}
 };

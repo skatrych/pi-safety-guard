@@ -27,6 +27,7 @@ export default [
       "require-jsdoc": "off",
       "valid-jsdoc": "off",
       "@typescript-eslint/no-unused-vars": ["error", { "argsIgnorePattern": "^_" }],
+      "no-console": "error",
       "indent": ["error", "tab", { "SwitchCase": 1 }],
       "quotes": ["error", "double"],
       "max-len": ["error", { "code": 120, "ignoreUrls": true }],

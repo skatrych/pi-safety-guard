@@ -3,6 +3,7 @@ import { existsSync, readFileSync as fsReadFileSync } from "node:fs";
 import { join, resolve, dirname, sep, relative } from "node:path";
 import { state } from "./state";
 import { sanitizeCommand, hasPathTraversal, expandTilde } from "./utils";
+import { logInfo, logError, logDebug } from "./logger";
 import {
 	dangerousBashPatterns,
 	projectLocalDeletionPatterns,
@@ -214,9 +215,7 @@ export const handleBashTools = async (
 	// as targets of an otherwise safe project-local deletion.
 	const offendingPath = findPass1OffendingPath(command, effectiveCwd, allowProjectDeletion);
 	if (offendingPath !== null) {
-		console.log(
-			`[safety-guard] BLOCKED bash access to blacklisted path: ${offendingPath}`
-		);
+		logInfo(`BLOCKED bash access to blacklisted path: ${offendingPath}`);
 		return {
 			block: true,
 			reason: `Bash command targets blacklisted path: ${offendingPath}`,
@@ -229,7 +228,7 @@ export const handleBashTools = async (
 		isProjectRootFind(command, effectiveCwd) &&
 		!hasNodeModulesExclusion(command, effectiveCwd)
 	) {
-		console.log(`[safety-guard] BLOCKED project-root find without node_modules exclusion: ${command}`);
+		logInfo(`BLOCKED project-root find without node_modules exclusion: ${command}`);
 		return {
 			block: true,
 			reason: "Project-root find requires explicit node_modules exclusion",
@@ -237,7 +236,7 @@ export const handleBashTools = async (
 	}
 
 	if (allowProjectDeletion) {
-		console.log(`[safety-guard] ALLOWED project-local deletion: ${command}`);
+		logDebug(`ALLOWED project-local deletion: ${command}`);
 		return undefined;
 	}
 
@@ -248,7 +247,7 @@ export const handleBashTools = async (
 	const isDangerous = dangerousBashPatterns.some((p) => p.test(command));
 	if (isDangerous) {
 		if (ctx.hasUI !== true) {
-			console.log(`[safety-guard] BLOCKED bash command (non-interactive): ${command}`);
+			logInfo(`BLOCKED bash command (non-interactive): ${command}`);
 			return { block: true, reason: "Dangerous command blocked (non-interactive)" };
 		}
 
@@ -259,7 +258,7 @@ export const handleBashTools = async (
 		);
 		if (!confirmed) {
 			if (state.notificationsEnabled) ctx.ui.notify("Blocked: " + command, "warning");
-			console.log(`[safety-guard] User rejected dangerous command: ${command}`);
+			logInfo(`User rejected dangerous command: ${command}`);
 			return { block: true, reason: "User rejected dangerous command" };
 		}
 		return undefined; // User approved
@@ -288,7 +287,7 @@ export const handleFileIOTools = async (
 
 	// Check path traversal before resolution
 	if (hasPathTraversal(pathParam)) {
-		console.log(`[safety-guard] BLOCKED path traversal attempt: ${pathParam}`);
+		logInfo(`BLOCKED path traversal attempt: ${pathParam}`);
 		return { block: true, reason: "Path traversal detected" };
 	}
 
@@ -299,9 +298,7 @@ export const handleFileIOTools = async (
 
 	// HIGHEST PRIORITY: BLACKLIST — strict block, no user override
 	if (securityLevel === "BLOCK") {
-		console.log(
-			`[safety-guard] BLOCKED ${toolName} on blacklisted path: ${resolvedPath}`
-		);
+		logInfo(`BLOCKED ${toolName} on blacklisted path: ${resolvedPath}`);
 		return {
 			block: true,
 			reason: "Blacklisted path blocked (credentials/confidential)",
@@ -314,9 +311,7 @@ export const handleFileIOTools = async (
 		(toolName === "write" || toolName === "edit") &&
 		isUnderDiscoveredNodeModules(resolvedPath)
 	) {
-		console.log(
-			`[safety-guard] BLOCKED ${toolName} under discovered node_modules: ${resolvedPath}`
-		);
+		logInfo(`BLOCKED ${toolName} under discovered node_modules: ${resolvedPath}`);
 		return {
 			block: true,
 			reason: "Write/edit under node_modules is blocked",
@@ -325,7 +320,7 @@ export const handleFileIOTools = async (
 
 	// WHITELIST: Allow automatically
 	if (securityLevel === "ALLOW") {
-		console.log(`[safety-guard] ALLOWED path (whitelisted): ${resolvedPath}`);
+		logDebug(`ALLOWED path (whitelisted): ${resolvedPath}`);
 		return undefined;
 	}
 
@@ -334,7 +329,7 @@ export const handleFileIOTools = async (
 	// causing the whitelist to be built with process.cwd() instead of the project dir.
 	const cwdNormalized = effectiveCwd.endsWith("/") ? effectiveCwd : effectiveCwd + "/";
 	if (resolvedPath.startsWith(cwdNormalized)) {
-		console.log(`[safety-guard] ALLOWED path (project directory): ${resolvedPath}`);
+		logDebug(`ALLOWED path (project directory): ${resolvedPath}`);
 		return undefined;
 	}
 
@@ -343,9 +338,7 @@ export const handleFileIOTools = async (
 
 	// DEFAULT: Require consent
 	if (ctx.hasUI !== true) {
-		console.log(
-			`[safety-guard] BLOCKED ${toolName} operation (non-interactive): ${pathParam}`
-		);
+		logInfo(`BLOCKED ${toolName} operation (non-interactive): ${pathParam}`);
 		return {
 			block: true,
 			reason: "Path requires consent (not whitelisted)",
@@ -359,7 +352,7 @@ export const handleFileIOTools = async (
 	);
 	if (!confirmed) {
 		if (state.notificationsEnabled) ctx.ui.notify("Blocked: " + pathParam, "warning");
-		console.log(`[safety-guard] User rejected consent for path: ${resolvedPath}`);
+		logInfo(`User rejected consent for path: ${resolvedPath}`);
 		return { block: true, reason: "User rejected consent for path" };
 	}
 	return undefined; // User approved
@@ -401,8 +394,8 @@ export const onSessionStart = (event: SessionStartEvent, ctx: ExtensionContext) 
 	state.nodeModulesPaths = nodeModulesDiscovery.paths;
 	state.nodeModulesInCwdTree = nodeModulesDiscovery.nodeModulesInCwdTree;
 
-	console.log(
-		`[safety-guard] node_modules locations=${nodeModulesDiscovery.paths.length}, ` +
+	logInfo(
+		`node_modules locations=${nodeModulesDiscovery.paths.length}, ` +
 		`inCwdTree=${nodeModulesDiscovery.nodeModulesInCwdTree}`
 	);
 
@@ -438,7 +431,7 @@ export const onSessionStart = (event: SessionStartEvent, ctx: ExtensionContext) 
 		if (config) {
 			const validation = validateConfig(config);
 			if (!validation.valid) {
-				console.error(`[safety-guard] Config validation failed: ${validation.errors.join(", ")}`);
+				logError(`Config validation failed: ${validation.errors.join(", ")}`);
 			} else {
 				if (validation.blockedPaths !== undefined) {
 					state.blockedPaths = validation.blockedPaths;
@@ -450,15 +443,15 @@ export const onSessionStart = (event: SessionStartEvent, ctx: ExtensionContext) 
 					state.notificationsEnabled = validation.notificationsEnabled;
 				}
 				state.permissionGatesEnabled = validation.permissionGatesEnabled ?? loadGlobalPermissionGatesEnabled();
-				console.log(
-					`[safety-guard] Config validated: ${state.allowedPaths.length} user-defined paths, notifications=${state.notificationsEnabled}`
+				logInfo(
+					`Config validated: ${state.allowedPaths.length} user-defined paths, notifications=${state.notificationsEnabled}`
 				);
 			}
 		} else {
 			state.permissionGatesEnabled = loadGlobalPermissionGatesEnabled();
-			console.log("[safety-guard] No config found, using defaults (notify=true, global whitelist preserved)");
+			logInfo("No config found, using defaults (notify=true, global whitelist preserved)");
 		}
-		console.log(`[safety-guard] User permission gates enabled=${state.permissionGatesEnabled}`);
+		logInfo(`User permission gates enabled=${state.permissionGatesEnabled}`);
 
 		// Session/project-specific whitelist paths from config.
 		const mergedPaths = [...state.allowedPaths];
@@ -466,7 +459,7 @@ export const onSessionStart = (event: SessionStartEvent, ctx: ExtensionContext) 
 		// Dynamic project directory
 		if (!mergedPaths.includes(effectiveCwd)) mergedPaths.push(effectiveCwd);
 		state.allowedPaths = mergedPaths;
-		console.log(`[safety-guard] Project directory added to whitelist: ${effectiveCwd}`);
+		logInfo(`Project directory added to whitelist: ${effectiveCwd}`);
 
 		// Rebuild session/project-specific whitelist regexes, preserving global defaults.
 		WHITELIST.length = 0;
@@ -476,12 +469,12 @@ export const onSessionStart = (event: SessionStartEvent, ctx: ExtensionContext) 
 		}
 
 		rebuildSessionBlacklist(effectiveCwd, nodeModulesDiscovery.paths);
-		console.log(`[safety-guard] Project blacklist entries added (.env at all depths, node_modules): ${effectiveCwd}, security policy appended to system prompt`);
+		logInfo(`Project blacklist entries added (.env at all depths, node_modules): ${effectiveCwd}, security policy appended to system prompt`);
 
 		state.configLoaded = true;
 	} catch (error: unknown) {
 		state.permissionGatesEnabled = false;
-		console.error("[safety-guard] Config load failed", error);
+		logError("Config load failed", error);
 		const fallbackCwd = effectiveCwd || process.cwd();
 		state.allowedPaths = [fallbackCwd];
 		state.notificationsEnabled = true;

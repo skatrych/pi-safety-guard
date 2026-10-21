@@ -1,9 +1,12 @@
 import { describe, test, beforeEach, afterEach } from "node:test";
 import assert from "node:assert/strict";
 import {
+	existsSync,
 	mkdirSync,
 	mkdtempSync,
+	readFileSync,
 	rmSync,
+	statSync,
 	symlinkSync,
 	writeFileSync,
 } from "node:fs";
@@ -16,6 +19,7 @@ import { BLACKLIST, WHITELIST, HOME_DIR } from "./constants";
 import { appendSecurityPolicy } from "./prompt";
 import { checkPathSecurity } from "./security";
 import { validateConfig } from "./config";
+import { logInfo, logError, logDebug } from "./logger";
 
 const createFixture = (): string => {
 	return mkdtempSync(join(tmpdir(), "safety-guard-"));
@@ -973,6 +977,76 @@ describe("handler integration", { concurrency: false }, () => {
 			assert.equal(state.configLoaded, true);
 		} finally {
 			cleanupFixture(fixture);
+		}
+	});
+});
+
+describe("logger", { concurrency: false }, () => {
+	let agentDir: string;
+	let previousAgentDir: string | undefined;
+
+	beforeEach(() => {
+		previousAgentDir = process.env.PI_CODING_AGENT_DIR;
+		agentDir = createFixture();
+		process.env.PI_CODING_AGENT_DIR = agentDir;
+	});
+
+	afterEach(() => {
+		if (previousAgentDir === undefined) delete process.env.PI_CODING_AGENT_DIR;
+		else process.env.PI_CODING_AGENT_DIR = previousAgentDir;
+		cleanupFixture(agentDir);
+	});
+
+	const readLogLines = (): string[] => {
+		return readFileSync(join(agentDir, "logs", "safety-guard.log"), "utf8").trimEnd().split("\n");
+	};
+
+	test("writes one timestamped line per entry to <agent-dir>/logs/safety-guard.log", () => {
+		logInfo("test line one");
+		logError("test error", new Error("boom"));
+		const lines = readLogLines();
+		assert.equal(lines.length, 2, "multiline error stack must stay on one physical line");
+		assert.match(lines[0], /^\d{4}-\d{2}-\d{2}T[\d:.]+Z \[info\] \[safety-guard\] test line one$/);
+		assert.ok(lines[1].includes("[error] [safety-guard] test error: Error: boom"));
+		assert.ok(lines[1].includes("boom\\n"), "stack newlines must be escaped");
+	});
+
+	test("keeps multiline and control-character messages on one physical line", () => {
+		logInfo("line-a\nline-b\r\nline-c\u001b[31mred");
+		const lines = readLogLines();
+		assert.equal(lines.length, 1);
+		assert.ok(lines[0].includes("line-a\\nline-b\\nline-c"));
+		assert.ok(!lines[0].includes("\u001b"), "escape bytes must be stripped");
+	});
+
+	test("creates log dir and file without group/other access", () => {
+		logInfo("perm check");
+		assert.equal(statSync(join(agentDir, "logs")).mode & 0o077, 0);
+		assert.equal(statSync(join(agentDir, "logs", "safety-guard.log")).mode & 0o077, 0);
+	});
+
+	test("does not throw when PI_CODING_AGENT_DIR points at an existing file", () => {
+		const file = join(agentDir, "afile");
+		writeFileSync(file, "x");
+		process.env.PI_CODING_AGENT_DIR = file;
+		assert.doesNotThrow(() => logInfo("should silently no-op"));
+		assert.equal(existsSync(join(file, "logs")), false);
+	});
+
+	test("debug-level lines are suppressed unless SAFETY_GUARD_LOG=debug", () => {
+		const previous = process.env.SAFETY_GUARD_LOG;
+		delete process.env.SAFETY_GUARD_LOG;
+		try {
+			logDebug("ALLOWED path (whitelisted): /secretly");
+			assert.equal(existsSync(join(agentDir, "logs", "safety-guard.log")), false);
+			process.env.SAFETY_GUARD_LOG = "debug";
+			logDebug("ALLOWED path (whitelisted): /secretly");
+			const lines = readLogLines();
+			assert.equal(lines.length, 1);
+			assert.ok(lines[0].includes("[debug] [safety-guard] ALLOWED path (whitelisted): /secretly"));
+		} finally {
+			if (previous === undefined) delete process.env.SAFETY_GUARD_LOG;
+			else process.env.SAFETY_GUARD_LOG = previous;
 		}
 	});
 });

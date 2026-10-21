@@ -31,6 +31,14 @@ export const expandTilde = (path: string): string => {
 };
 
 /**
+ * Pi agent directory: $PI_CODING_AGENT_DIR (with ~ expansion) or ~/.pi/agent.
+ * Shared by config lookup (config.ts) and logging (logger.ts).
+ */
+export const getAgentDir = (): string => {
+	return expandTilde(process.env.PI_CODING_AGENT_DIR || join(HOME_DIR, ".pi", "agent"));
+};
+
+/**
  * Check for path traversal attacks before path resolution.
  */
 export const hasPathTraversal = (path: string): boolean => {

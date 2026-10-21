@@ -388,6 +388,8 @@ Notifications are shown only in user-rejection branches where notification logic
 When permission gates are enabled, operations that require user confirmation are blocked when confirmation cannot be obtained (e.g., no UI available). When gates are off, these approval-only operations proceed even without a UI; unconditional protections remain active.
 
 ### 12.4. Logging behavior
+All log lines are appended to `<agent-dir>/logs/safety-guard.log` (agent dir = `$PI_CODING_AGENT_DIR`, defaulting to `~/.pi/agent`). Logs are never written to the console or TUI. Success-level `ALLOWED` lines are only logged when `SAFETY_GUARD_LOG=debug` is set; `BLOCKED`, rejection, and error lines are always logged.
+
 Observable logging includes, at minimum:
 - configuration validation success/failure
 - config load failure
